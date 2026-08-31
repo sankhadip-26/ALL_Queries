@@ -1,0 +1,173 @@
+DECLARE start_date DATE DEFAULT '2025-09-01';
+DECLARE end_date DATE DEFAULT '2026-08-31';
+WITH
+  raw_events AS (
+    SELECT
+      DATE(datetime(create_date, 'Asia/Kolkata')) AS event_date,
+      CASE
+        WHEN api LIKE '/product/%' THEN 'VIEW'
+        WHEN api LIKE '%/user/cartitem/%' THEN 'ATC'
+      END AS event_type,
+      CASE
+        WHEN api LIKE '/product/%' THEN REPLACE(
+          REGEXP_EXTRACT(api, r'/product/([^/?]+)'),
+          '%20',
+          ' '
+        )
+        WHEN api LIKE '%/user/cartitem/%' THEN REGEXP_EXTRACT(api, r'/user/cartitem/\d+/([^/?]+)')
+      END AS barcode,
+      REGEXP_EXTRACT(api, r'/user/cartitem/(\d+)/') AS store_id
+    FROM
+      slikk-prod.slikkprodUT.public_authentication_usertracking
+    WHERE
+      device IS NOT NULL
+      AND (
+        api LIKE '/product/%'
+        OR api LIKE '%/user/cartitem/%'
+      )
+      AND create_date >= TIMESTAMP(start_date, 'Asia/Kolkata')
+      AND create_date < TIMESTAMP(
+        DATE_ADD(end_date, INTERVAL 1 DAY),
+        'Asia/Kolkata'
+      )
+  ),
+  enriched_events AS (
+    SELECT
+      e.event_date,
+      e.event_type,
+      e.store_id,
+      p.id AS product_id,
+      p.variant_id AS variant,
+      b.name AS brand,
+      pt.division,
+      pt.article_type,
+      pt.fashion_style,
+      pt.category,
+      pt.subcategory,
+      pt.product_type,
+      pt.gender
+    FROM
+      raw_events e
+      INNER JOIN `slikk-prod.slikkprodpublic.product_product` p ON CASE
+        WHEN e.event_type = 'VIEW' THEN (
+          p.barcode = e.barcode
+          OR p.skid = e.barcode
+        )
+        WHEN e.event_type = 'ATC' THEN p.barcode = e.barcode
+      END
+      INNER JOIN `slikk-prod.slikkprodpublic.product_brand` b ON b.id = p.brand_id
+      INNER JOIN slikk-prod.slikksilver.product_tags pt ON pt.product_id = p.id
+  ),
+  date_wise_events AS (
+    SELECT
+      event_date,
+      product_id,
+      variant,
+      brand,
+      division,
+      fashion_style,
+      category,
+      subcategory,
+      article_type,
+      product_type,
+      gender,
+      COUNTIF(event_type = 'VIEW') AS views,
+      COUNTIF(event_type = 'ATC') AS add_to_cart
+    FROM
+      enriched_events
+    GROUP BY
+      1,
+      2,
+      3,
+      4,
+      5,
+      6,
+      7,
+      8,
+      9,
+      10,
+      11
+  ),
+  date_wise_orders AS (
+    SELECT
+      DATE(oo.create_date + INTERVAL '330' minute) AS order_date,
+      pp.id AS product_id,
+      SUM(oi.quantity) AS qty_ordered
+    FROM
+      `slikk-prod.slikkprodpublic.order_order` oo
+      JOIN `slikk-prod.slikkprodpublic.order_orderitem` oi ON oo.id = oi.order_id
+      JOIN `slikk-prod.slikkprodpublic.product_product` pp ON pp.id = oi.product_id
+    WHERE
+      oo.status NOT IN ('OPEN', 'FAILED')
+      AND oo.delivery_type != 'EXCHANGE'
+      AND oo.create_date >= TIMESTAMP(start_date, 'Asia/Kolkata')
+      AND oo.create_date < TIMESTAMP(
+        DATE_ADD(end_date, INTERVAL 1 DAY),
+        'Asia/Kolkata'
+      )
+    GROUP BY
+      1,
+      2
+  )
+SELECT
+  e.event_date AS date,
+  e.variant AS style_code,
+  e.division,
+  e.fashion_style,
+  e.category,
+  e.subcategory,
+  e.article_type,
+  e.product_type,
+  e.gender,
+  e.brand,
+  format_date(
+    "%Y-%m",
+    date(e.event_date + INTERVAL '330' minute)
+  ) AS order_month,
+  FORMAT_DATE(
+    "%Y-%m-%d",
+    DATE(e.event_date + INTERVAL 330 MINUTE)
+  ) AS order_date,
+  CONCAT(
+    'Wk',
+    ' | ',
+    FORMAT_DATE(
+      '%y/%m/%d',
+      DATE_TRUNC(
+        date(e.event_date + INTERVAL '330' minute),
+        WEEK(SATURDAY)
+      )
+    ),
+    ' to ',
+    FORMAT_DATE(
+      '%y/%m/%d',
+      DATE_ADD(
+        DATE_TRUNC(
+          date(e.event_date + INTERVAL '330' minute),
+          WEEK(SATURDAY)
+        ),
+        INTERVAL 6 DAY
+      )
+    )
+  ) AS week_label,
+  SUM(e.views) AS product_views,
+  SUM(e.add_to_cart) AS add_to_cart,
+  SUM(o.qty_ordered) AS qty_ordered
+FROM
+  date_wise_events e
+  LEFT JOIN date_wise_orders o ON o.order_date = e.event_date
+  AND o.product_id = e.product_id
+  where lower(e.brand) = 'deodap'
+GROUP BY
+  1,
+  2,
+  3,
+  4,
+  5,
+  6,
+  7,
+  8,
+  9,
+  10
+ORDER BY
+  1 DESC
