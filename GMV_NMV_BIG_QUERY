@@ -1,0 +1,434 @@
+WITH
+params AS (
+  SELECT
+    DATE '2026-08-01' AS start_date,
+    DATE '2026-08-01' AS end_date
+),
+orders_in_range AS (
+  SELECT
+    oo.id,
+    oo.order_id,
+    oo.invoice_id,
+    oo.uuid,
+    oo.mobile,
+    oo.status,
+    oo.delivery_type,
+    oo.create_date,
+    oo.store_id,
+    oo.pincode,
+    oo.distance,
+    oo.device_type,
+    oo.delivery,
+    oo.coupon_code,
+    oo.latitude,
+    oo.longitude,
+    DATETIME(oo.create_date, 'Asia/Kolkata') AS ts_ist,
+    IFNULL(REGEXP_CONTAINS(TO_JSON_STRING(oo.log), r'"status"\s*:\s*"PACKED"'), FALSE) AS log_packed,
+    IFNULL(REGEXP_CONTAINS(TO_JSON_STRING(oo.log), r'"status"\s*:\s*"(RTO_INITIATED|RTO_DELIVERED)"'), FALSE) AS log_rto
+  FROM `slikk-prod.slikkprodpublic.order_order` oo
+  CROSS JOIN params p
+  WHERE oo.status NOT IN ('OPEN', 'FAILED')
+    AND oo.delivery_type <> 'EXCHANGE'
+    
+    AND oo.create_date >= TIMESTAMP(p.start_date, 'Asia/Kolkata')
+    AND oo.create_date < TIMESTAMP(DATE_ADD(p.end_date, INTERVAL 1 DAY), 'Asia/Kolkata')
+),
+
+
+order_items_in_range AS (
+  SELECT
+    oi.id AS order_item_id,
+    oi.order_id,
+    oi.product_id,
+    oi.mrp,
+    oi.sp,
+    oi.brand_offer_sp,
+    oi.prorated_price,
+    oi.final_price,
+    oi.quantity,
+    oi.fulfilled_quantity,
+    oi.points_discount,
+    oi.loyalty_discount,
+    oi.coupon_discount,
+    oi.other_discounts
+  FROM `slikk-prod.slikkprodpublic.order_orderitem` oi
+  JOIN orders_in_range o ON o.id = oi.order_id
+),
+
+
+products_in_range AS (
+  SELECT DISTINCT product_id FROM order_items_in_range
+),
+mobiles AS (
+  SELECT DISTINCT mobile FROM orders_in_range WHERE mobile IS NOT NULL
+),
+invoices_in_range AS (
+  SELECT DISTINCT invoice_id FROM orders_in_range WHERE invoice_id IS NOT NULL
+),
+relevant_brands AS (
+  SELECT DISTINCT LOWER(pb.name) AS brand
+  FROM products_in_range pr
+  JOIN `slikk-prod.slikkprodpublic.product_product` pp ON pp.id = pr.product_id
+  JOIN `slikk-prod.slikkprodpublic.product_brand`   pb ON pb.id = pp.brand_id
+),
+
+
+split_orders AS (
+  SELECT order_id
+  FROM orders_in_range
+  GROUP BY order_id
+  HAVING COUNT(DISTINCT invoice_id) > 1
+),
+
+
+first_order AS ( 
+  SELECT o.mobile, o.order_id
+  FROM `slikk-prod.slikkprodpublic.order_order` o
+  WHERE o.mobile IN (SELECT mobile FROM mobiles)
+    AND o.status NOT IN ('OPEN', 'FAILED')
+    AND o.delivery_type <> 'EXCHANGE'
+  QUALIFY ROW_NUMBER() OVER (PARTITION BY o.mobile ORDER BY o.create_date) = 1
+),
+
+pay_by_order_id AS (
+  SELECT
+    p.order_id,
+    MAX(p.mode)   AS mode,
+    MAX(p.status) AS status
+  FROM `slikk-prod.slikkprodpublic.payment_payment` p
+  JOIN orders_in_range o ON p.order_id = o.order_id
+  WHERE p.status IN ('COMPLETED', 'POD_COMPLETED')
+  GROUP BY p.order_id
+),
+pay_by_uuid AS (
+  SELECT
+    p.order_id,
+    MAX(p.mode)   AS mode,
+    MAX(p.status) AS status
+  FROM `slikk-prod.slikkprodpublic.payment_payment` p
+  JOIN orders_in_range o ON CAST(p.order_id AS STRING) = CAST(o.uuid AS STRING)
+  WHERE p.status IN ('COMPLETED', 'POD_COMPLETED')
+  GROUP BY p.order_id
+),
+
+return_rows AS (
+  SELECT
+    roi.order_item_id,
+    ro.id AS return_order_id,
+    ro.create_date,
+    ro.status       AS return_status,
+    ro.return_type,
+    o.status        AS order_status,
+    o.log_packed,
+    o.log_rto,
+    oi.quantity,
+    oi.fulfilled_quantity,
+    roi.quantity    AS return_qty
+  FROM `slikk-prod.slikkprodpublic.order_returnorderitem` roi
+  JOIN `slikk-prod.slikkprodpublic.order_returnorder`     ro ON ro.id = roi.return_order_id
+  JOIN order_items_in_range oi ON oi.order_item_id = roi.order_item_id
+  JOIN orders_in_range      o  ON o.id = oi.order_id
+  WHERE LOWER(ro.return_type) NOT LIKE '%exchange%'
+),
+
+return_dedup AS (
+  SELECT
+    order_item_id,
+    return_status,
+    return_type,
+    order_status,
+    log_packed,
+    log_rto,
+    quantity,
+    fulfilled_quantity,
+    return_qty
+  FROM return_rows
+  QUALIFY ROW_NUMBER() OVER (
+    PARTITION BY
+      order_item_id,
+      CASE WHEN order_status = 'CANCELLED' THEN 'FIXED' ELSE CAST(return_order_id AS STRING) END
+    ORDER BY create_date ASC
+  ) = 1
+),
+
+returns_agg AS (
+  SELECT
+    order_item_id,
+    SUM(CASE
+          WHEN return_status NOT IN (
+                 'OPEN','ACCEPTED','CANCELLED','DELIVERY_CANCELLED',
+                 'PICKUP_CANCELLED','RETURN_CANCELLED',
+                 'RETURN_REJECTED','ATTEMPT_FAILED')
+           AND order_status IN (
+                 'COMPLETED','PACKED','SHIPPED',
+                 'OUT_FOR_DELIVERY','ACCEPTED')
+          THEN return_qty ELSE 0
+        END) AS quantity,
+    SUM(CASE
+          WHEN order_status = 'CANCELLED'
+           AND NOT log_rto
+           AND return_type = 'DASHBOARD_CANCELLED'
+          THEN CASE WHEN log_packed THEN fulfilled_quantity ELSE quantity END
+          ELSE 0
+        END) AS cancelled_by_dashboard,
+    SUM(CASE
+          WHEN order_status = 'CANCELLED'
+           AND (log_rto OR return_type = 'RTO')
+          THEN CASE WHEN log_packed THEN fulfilled_quantity ELSE quantity END
+          ELSE 0
+        END) AS rto,
+    SUM(CASE
+          WHEN order_status = 'CANCELLED'
+           AND NOT log_rto
+           AND return_type LIKE 'USER%'
+          THEN CASE WHEN log_packed THEN fulfilled_quantity ELSE quantity END
+          ELSE 0
+        END) AS cancelled_by_user
+  FROM return_dedup
+  GROUP BY order_item_id
+),
+
+product_tags AS (
+select * from 
+slikk-prod.slikksilver.product_tags
+),
+
+
+brand_wise_business_model AS (
+  SELECT
+    LOWER(pb.name)         AS brand,
+    MAX(pvo.business_model) AS business_model
+  FROM `slikk-prod.slikkprodpublic.product_vendorpurchaseorder`     pvo
+  JOIN `slikk-prod.slikkprodpublic.product_vendorpurchaseorderitem` pvoi ON pvo.id = pvoi.order_id
+  JOIN products_in_range                                            pr   ON pr.product_id = pvoi.product_id
+  JOIN `slikk-prod.slikkprodpublic.product_product`                 pp   ON pp.id = pvoi.product_id
+  JOIN `slikk-prod.slikkprodpublic.product_brand`                   pb   ON pb.id = pp.brand_id
+  WHERE DATETIME(pvo.created_at, 'Asia/Kolkata') >= DATETIME '2026-03-01 00:00:00'
+    AND LOWER(pvo.status) <> 'cancelled'
+  GROUP BY LOWER(pb.name)
+),
+
+
+base AS (
+  SELECT
+    o.order_id,
+    o.invoice_id,
+    o.mobile,
+    o.status,
+    CASE
+      WHEN o.status = 'CANCELLED' AND o.log_packed       THEN 'cancelled_after_packed'
+      WHEN o.status = 'CANCELLED' AND NOT o.log_packed   THEN 'cancelled_before_packed'
+      ELSE o.status
+    END AS status_modified,
+    ss.code AS store_code,
+
+    CONCAT(' ', FORMAT_DATE('%Y-%m-%d', DATE(o.ts_ist))) AS order_date,
+    o.ts_ist AS order_timestamp,
+    EXTRACT(HOUR   FROM o.ts_ist) AS order_hour,
+    EXTRACT(MINUTE FROM o.ts_ist) AS order_mins,
+    FORMAT_DATETIME('%Y-%m', o.ts_ist) AS order_month,
+
+    CONCAT(
+      'Wk', ' | ',
+      FORMAT_DATE('%y/%m/%d', DATE_TRUNC(DATE(o.ts_ist), WEEK(SATURDAY))),
+      ' to ',
+      FORMAT_DATE('%y/%m/%d',
+        DATE_ADD(DATE_TRUNC(DATE(o.ts_ist), WEEK(SATURDAY)), INTERVAL 6 DAY))
+    ) AS week_label,
+
+    CASE WHEN ss.code = 'slikk201' THEN 'jaipur' ELSE 'bangalore' END AS city,
+    CASE WHEN fo.order_id = o.order_id THEN 'new' ELSE 'repeat' END   AS new_or_repeat_order,
+
+    o.pincode,
+    o.delivery_type,
+    o.status AS order_status,
+    o.distance,
+    o.device_type,
+
+    SAFE_DIVIDE(
+      CAST(o.delivery AS NUMERIC),
+      COUNT(oi.order_item_id) OVER (PARTITION BY o.invoice_id)
+    ) AS avg_delivery_fee_num,
+
+    o.coupon_code,
+    pt.division,
+    IFNULL(pt.fashion_style, 'NA') AS fashion_style,
+    IFNULL(pb.name, 'NA')          AS brand,
+    pt.category,
+    pt.subcategory,
+    pt.product_type,
+    pt.article_type,
+    pp.color,
+    pp.size,
+    pt.gender,
+    IFNULL(u.gender, 'NA') AS user_gender,
+    pp.variant_id AS style_code,
+    pp.name       AS product_name,
+    pp.sku,
+    pp.skid,
+
+    CAST(oi.mrp             AS NUMERIC) AS mrp_num,
+    CAST(oi.sp              AS NUMERIC) AS sp_num,
+    CAST(oi.brand_offer_sp  AS NUMERIC) AS brand_offer_sp_num,
+    CAST(oi.prorated_price  AS NUMERIC) AS prorated_price_num,
+    CAST(oi.final_price     AS NUMERIC) AS final_price_num,
+    oi.quantity,
+
+    CASE WHEN o.status NOT IN (
+           'CANCELLED','DECLINED','RTO_CANCELLED',
+           'RTO_DELIVERED','RTO_INITIATED')
+         THEN oi.fulfilled_quantity ELSE 0
+    END AS fulfilled_quantity,
+
+    CASE
+      WHEN o.status <> 'CANCELLED'                     THEN oi.quantity - oi.fulfilled_quantity
+      WHEN o.status =  'CANCELLED' AND o.log_packed    THEN oi.quantity - oi.fulfilled_quantity
+      ELSE 0
+    END AS declined_qty,
+
+    CASE WHEN o.status IN ('CANCELLED','RTO_DELIVERED','RTO_INITIATED')
+         THEN CASE WHEN o.log_packed THEN oi.fulfilled_quantity ELSE oi.quantity END
+         ELSE 0
+    END AS cancelled_qty,
+
+    IFNULL(ra.cancelled_by_dashboard, 0) AS cancelled_by_dashboard_qty,
+    IFNULL(ra.cancelled_by_user,      0) AS cancelled_by_user_qty,
+    IFNULL(ra.rto, 0)
+      + IFNULL(CASE WHEN o.status IN ('RTO_DELIVERED','RTO_INITIATED')
+                    THEN oi.fulfilled_quantity END, 0) AS cancelled_rto_qty,
+    IFNULL(ra.quantity, 0) AS return_quantity,
+
+    GREATEST(
+      CASE WHEN o.status NOT IN (
+             'CANCELLED','DECLINED','RTO_CANCELLED',
+             'RTO_DELIVERED','RTO_INITIATED')
+           THEN IFNULL(oi.fulfilled_quantity, 0)
+           ELSE 0
+      END - IFNULL(ra.quantity, 0),
+      0
+    ) AS net_qty_sold,
+
+    CAST(oi.points_discount  AS NUMERIC) AS points_discount_num,
+    CAST(oi.loyalty_discount AS NUMERIC) AS loyalty_discount_num,
+    CAST(oi.coupon_discount  AS NUMERIC) AS coupon_discount_num,
+    CAST(oi.other_discounts  AS NUMERIC) AS other_discounts_num,
+
+    IFNULL(
+      CAST(oi.points_discount  AS NUMERIC)
+      + CAST(oi.loyalty_discount AS NUMERIC)
+      + CAST(oi.coupon_discount  AS NUMERIC)
+      + IFNULL(SAFE_CAST(oi.other_discounts AS INT64), 0),
+      0
+    ) AS total_discount_num,
+
+    COALESCE(p1.mode,   p2.mode,   'NA') AS payment_mode,
+    COALESCE(p1.status, p2.status, 'NA') AS payment_status,
+    CASE WHEN so.order_id IS NULL THEN 'no' ELSE 'yes' END AS is_split_order,
+
+    o.latitude,
+    o.longitude,
+    LOWER(sc.code) AS company_code,
+    bwbm.business_model,
+    pp.tax_rate
+  FROM orders_in_range        o
+  JOIN `slikk-prod.slikkprodpublic.store_store`          ss ON ss.id = o.store_id
+  JOIN order_items_in_range                              oi ON oi.order_id = o.id
+  JOIN `slikk-prod.slikkprodpublic.product_product`      pp ON pp.id = oi.product_id
+  JOIN `slikk-prod.slikkprodpublic.product_brand`        pb ON pb.id = pp.brand_id
+  JOIN first_order                                       fo ON fo.mobile = o.mobile
+  JOIN product_tags                                      pt ON pt.product_id = pp.id
+  LEFT JOIN pay_by_order_id                              p1 ON p1.order_id = o.order_id
+  LEFT JOIN pay_by_uuid                                  p2 ON CAST(p2.order_id AS STRING) = CAST(o.uuid AS STRING)
+  LEFT JOIN `slikk-prod.slikkprodpublic.authentication_user` u  ON u.mobile = o.mobile
+  LEFT JOIN returns_agg                                  ra ON ra.order_item_id = oi.order_item_id
+  LEFT JOIN split_orders                                 so ON so.order_id = o.order_id
+  LEFT JOIN `slikk-prod.slikkprodpublic.store_company`   sc ON sc.id = pp.company_id
+  LEFT JOIN brand_wise_business_model                    bwbm ON bwbm.brand = LOWER(pb.name)
+),
+
+
+remittance_dump AS (
+  SELECT
+    order_id,
+    invoice_id,
+    mobile,
+    status,
+    status_modified,
+    store_code,
+    FORMAT_DATE('%d-%m-%Y', CAST(TRIM(order_date) AS DATE)) AS order_date,
+    order_timestamp,
+    order_hour,
+    order_mins,
+    order_month,
+    week_label,
+    city,
+    new_or_repeat_order,
+    pincode,
+    delivery_type,
+    order_status,
+    distance,
+    device_type,
+    FORMAT('%.2f', avg_delivery_fee_num) AS avg_delivery_fee,
+    coupon_code,
+    division,
+    fashion_style,
+    brand,
+    category,
+    subcategory,
+    article_type,
+    product_type,
+    color,
+    size,
+    gender,
+    user_gender,
+    style_code,
+    product_name,
+    sku,
+    skid,
+    FORMAT('%.2f', mrp_num)            AS mrp,
+    FORMAT('%.2f', sp_num)             AS sp,
+    FORMAT('%.2f', brand_offer_sp_num) AS brand_offer_sp,
+    FORMAT('%.2f', prorated_price_num) AS prorated_price,
+    FORMAT('%.2f', final_price_num)    AS final_price,
+    quantity,
+    fulfilled_quantity,
+    declined_qty,
+    cancelled_qty,
+    return_quantity,
+    net_qty_sold,
+    FORMAT('%.2f', points_discount_num)  AS points_discount,
+    FORMAT('%.2f', loyalty_discount_num) AS loyalty_discount,
+    FORMAT('%.2f', coupon_discount_num)  AS coupon_discount,
+    FORMAT('%.2f', other_discounts_num)  AS other_discounts,
+    FORMAT('%.2f', total_discount_num)   AS total_discount,
+    FORMAT('%.2f', net_qty_sold * (sp_num - prorated_price_num)) AS net_discount,
+    FORMAT('%.2f', sp_num * quantity)         AS gmv,
+    FORMAT('%.2f', sp_num * declined_qty)     AS declined_amount,
+    FORMAT('%.2f', sp_num * cancelled_qty)    AS cancelled_amount,
+    FORMAT('%.2f', sp_num * return_quantity)  AS return_amount,
+    FORMAT('%.2f', 
+      sp_num * quantity 
+      - sp_num * declined_qty 
+      - sp_num * cancelled_qty 
+      - sp_num * return_quantity 
+    ) AS nmv_before_discount,
+    FORMAT('%.2f',
+      sp_num * quantity 
+      - sp_num * declined_qty 
+      - sp_num * cancelled_qty  
+      - sp_num * return_quantity 
+      - net_qty_sold * (sp_num - prorated_price_num) 
+    ) AS nmv_after_discount,
+    payment_mode,
+    payment_status,
+    is_split_order,
+    ROUND(CAST(latitude  AS NUMERIC), 5) AS latitude,
+    ROUND(CAST(longitude AS NUMERIC), 5) AS longitude,
+    company_code,
+    business_model,
+    tax_rate 
+  FROM base 
+)
+
+SELECT *
+FROM remittance_dump;
