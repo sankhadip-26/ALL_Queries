@@ -18,7 +18,7 @@ WITH date_range AS (
     WHERE
       oo.status NOT IN ('OPEN', 'FAILED')
       AND oo.delivery_type <> 'EXCHANGE'
-     AND oo.create_date >= (d.start_date - INTERVAL '330 minutes')
+       AND oo.create_date >= (d.start_date - INTERVAL '330 minutes')
       AND oo.create_date < (
         (d.end_date + INTERVAL '1 day') - INTERVAL '330 minutes')
       )
@@ -471,13 +471,19 @@ WITH date_range AS (
         'FM9999999999990.00'
       ) AS nmv_after_discount,
       payment_mode,
-      payment_status
+      payment_status,
+      -- TRADE DISCOUNT = SP / MRP
+      ROUND(
+    (1 - (sp_num / NULLIF(mrp_num, 0))) * 100,
+    2
+) AS trade_discount
     FROM
       base
   )
 SELECT
-brand,sum(quantity) as quantity
+brand as "BRAND",ROUND(SUM(CAST(gmv AS numeric)) / 100000,2) AS "TOTAL_GMV_LAKHS",sum(quantity) as "QTY",round((SUM(CAST(gmv AS numeric))/sum(quantity)),2) as "ASP",
+ROUND(AVG(trade_discount), 2) AS "AVG_TD"
 FROM
-  remittance_dump
+ remittance_dump
 group by 1
-order by sum(quantity) desc;
+order by ROUND(SUM(CAST(gmv AS numeric)) / 100000,2) desc;
