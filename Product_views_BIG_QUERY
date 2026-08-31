@@ -1,6 +1,8 @@
-DECLARE start_date DATE DEFAULT '2025-09-01';
-DECLARE end_date DATE DEFAULT '2026-08-31';
-WITH
+WITH params AS (
+  SELECT
+    DATE '2026-08-01' AS start_date,
+    DATE '2026-08-01' AS end_date
+),
   raw_events AS (
     SELECT
       DATE(datetime(create_date, 'Asia/Kolkata')) AS event_date,
@@ -19,15 +21,16 @@ WITH
       REGEXP_EXTRACT(api, r'/user/cartitem/(\d+)/') AS store_id
     FROM
       slikk-prod.slikkprodUT.public_authentication_usertracking
+       CROSS JOIN params p
     WHERE
       device IS NOT NULL
       AND (
         api LIKE '/product/%'
         OR api LIKE '%/user/cartitem/%'
       )
-      AND create_date >= TIMESTAMP(start_date, 'Asia/Kolkata')
+      AND create_date >= TIMESTAMP(p.start_date, 'Asia/Kolkata')
       AND create_date < TIMESTAMP(
-        DATE_ADD(end_date, INTERVAL 1 DAY),
+        DATE_ADD(p.end_date, INTERVAL 1 DAY),
         'Asia/Kolkata'
       )
   ),
@@ -97,12 +100,13 @@ WITH
       `slikk-prod.slikkprodpublic.order_order` oo
       JOIN `slikk-prod.slikkprodpublic.order_orderitem` oi ON oo.id = oi.order_id
       JOIN `slikk-prod.slikkprodpublic.product_product` pp ON pp.id = oi.product_id
+      CROSS JOIN params p
     WHERE
       oo.status NOT IN ('OPEN', 'FAILED')
       AND oo.delivery_type != 'EXCHANGE'
-      AND oo.create_date >= TIMESTAMP(start_date, 'Asia/Kolkata')
+      AND oo.create_date >= TIMESTAMP(p.start_date, 'Asia/Kolkata')
       AND oo.create_date < TIMESTAMP(
-        DATE_ADD(end_date, INTERVAL 1 DAY),
+        DATE_ADD(p.end_date, INTERVAL 1 DAY),
         'Asia/Kolkata'
       )
     GROUP BY
