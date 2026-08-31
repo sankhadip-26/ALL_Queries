@@ -112,66 +112,110 @@ WITH params AS (
     GROUP BY
       1,
       2
-  )
-SELECT
-  e.event_date AS date,
-  e.variant AS style_code,
-  e.division,
-  e.fashion_style,
-  e.category,
-  e.subcategory,
-  e.article_type,
-  e.product_type,
-  e.gender,
-  e.brand,
-  format_date(
-    "%Y-%m",
-    date(e.event_date + INTERVAL '330' minute)
-  ) AS order_month,
-  FORMAT_DATE(
-    "%Y-%m-%d",
-    DATE(e.event_date + INTERVAL 330 MINUTE)
-  ) AS order_date,
-  CONCAT(
-    'Wk',
-    ' | ',
-    FORMAT_DATE(
-      '%y/%m/%d',
-      DATE_TRUNC(
-        date(e.event_date + INTERVAL '330' minute),
-        WEEK(SATURDAY)
-      )
-    ),
-    ' to ',
-    FORMAT_DATE(
-      '%y/%m/%d',
-      DATE_ADD(
-        DATE_TRUNC(
-          date(e.event_date + INTERVAL '330' minute),
-          WEEK(SATURDAY)
+  ),
+
+  final_table AS (
+    SELECT
+      e.event_date AS date,
+
+      e.variant AS style_code,
+
+      e.division,
+
+      e.fashion_style,
+
+      e.category,
+
+      e.subcategory,
+
+      e.article_type,
+
+      e.product_type,
+
+      e.gender,
+
+      e.brand,
+
+      FORMAT_DATE(
+        '%Y-%m',
+        e.event_date
+      ) AS order_month,
+
+      FORMAT_DATE(
+        '%Y-%m-%d',
+        e.event_date
+      ) AS order_date,
+
+      CONCAT(
+        'Wk',
+        ' | ',
+
+        FORMAT_DATE(
+          '%y/%m/%d',
+          DATE_TRUNC(
+            e.event_date,
+            WEEK(SATURDAY)
+          )
         ),
-        INTERVAL 6 DAY
-      )
-    )
-  ) AS week_label,
-  SUM(e.views) AS product_views,
-  SUM(e.add_to_cart) AS add_to_cart,
-  SUM(o.qty_ordered) AS qty_ordered
+
+        ' to ',
+
+        FORMAT_DATE(
+          '%y/%m/%d',
+          DATE_ADD(
+            DATE_TRUNC(
+              e.event_date,
+              WEEK(SATURDAY)
+            ),
+            INTERVAL 6 DAY
+          )
+        )
+      ) AS week_label,
+
+      SUM(
+        e.views
+      ) AS product_views,
+
+      SUM(
+        e.add_to_cart
+      ) AS add_to_cart,
+
+      SUM(
+        o.qty_ordered
+      ) AS qty_ordered
+
+    FROM
+      date_wise_events e
+
+      LEFT JOIN
+        date_wise_orders o
+
+      ON
+        o.order_date = e.event_date
+        AND o.product_id = e.product_id
+
+    GROUP BY
+      1,
+      2,
+      3,
+      4,
+      5,
+      6,
+      7,
+      8,
+      9,
+      10
+  )
+
+SELECT
+  brand,
+  SUM(product_views) AS PDP
+
 FROM
-  date_wise_events e
-  LEFT JOIN date_wise_orders o ON o.order_date = e.event_date
-  AND o.product_id = e.product_id
-  where lower(e.brand) = 'deodap'
+  final_table
+
 GROUP BY
-  1,
-  2,
-  3,
-  4,
-  5,
-  6,
-  7,
-  8,
-  9,
-  10
+  1
+
 ORDER BY
-  1 DESC
+  SUM(product_views) DESC;
