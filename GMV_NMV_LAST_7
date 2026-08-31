@@ -1,0 +1,489 @@
+WITH date_range AS (
+    SELECT
+        CURRENT_DATE - INTERVAL '7 days' AS start_date,
+        CURRENT_DATE - INTERVAL '1 day' AS end_date
+),
+  orders_in_range AS (
+    SELECT
+      oo.*,
+      oo.create_date + INTERVAL '330 minutes' AS ts_ist,
+      COALESCE(oo.log::text ~ '"status"\s*:\s*"PACKED"', FALSE) AS log_packed,
+      COALESCE(
+        oo.log::text ~ '"status"\s*:\s*"(RTO_INITIATED|RTO_DELIVERED)"',
+        FALSE
+      ) AS log_rto
+    FROM
+      order_order oo
+      cross join date_range d
+    WHERE
+      oo.status NOT IN ('OPEN', 'FAILED')
+      AND oo.delivery_type <> 'EXCHANGE'
+       AND oo.create_date >= (d.start_date - INTERVAL '330 minutes')
+      AND oo.create_date < (
+        (d.end_date + INTERVAL '1 day') - INTERVAL '330 minutes')
+      )
+     ,    
+  products_in_range AS (
+    SELECT DISTINCT
+      oi.product_id
+    FROM
+      order_orderitem oi
+      JOIN orders_in_range oo ON oo.id = oi.order_id
+  ),
+  product_tags_raw AS (
+    SELECT
+      ti.object_id AS product_id,
+      tag.name AS tag_name
+    FROM
+      taggit_taggeditem ti
+      JOIN taggit_tag tag ON ti.tag_id = tag.id
+      JOIN products_in_range pr ON pr.product_id = ti.object_id
+  ),
+  product_tags AS (
+    SELECT
+      product_id,
+      STRING_AGG(
+        DISTINCT CASE
+          WHEN starts_with(UPPER(tag_name), 'DIVISION_') THEN split_part(tag_name, '_', 2)
+        END,
+        '/'
+        ORDER BY
+          CASE
+            WHEN starts_with(UPPER(tag_name), 'DIVISION_') THEN split_part(tag_name, '_', 2)
+          END
+      ) AS division,
+      STRING_AGG(
+        DISTINCT CASE
+          WHEN starts_with(UPPER(tag_name), 'FASHIONSTYLE_') THEN split_part(tag_name, '_', 2)
+        END,
+        '/'
+        ORDER BY
+          CASE
+            WHEN starts_with(UPPER(tag_name), 'FASHIONSTYLE_') THEN split_part(tag_name, '_', 2)
+          END
+      ) AS fashion_style,
+      STRING_AGG(
+        DISTINCT CASE
+          WHEN starts_with(UPPER(tag_name), 'CATEGORY_') THEN split_part(tag_name, '_', 2)
+        END,
+        '/'
+        ORDER BY
+          CASE
+            WHEN starts_with(UPPER(tag_name), 'CATEGORY_') THEN split_part(tag_name, '_', 2)
+          END
+      ) AS category,
+      STRING_AGG(
+        DISTINCT CASE
+          WHEN starts_with(UPPER(tag_name), 'SUBCATEGORY_') THEN split_part(tag_name, '_', 2)
+        END,
+        '/'
+        ORDER BY
+          CASE
+            WHEN starts_with(UPPER(tag_name), 'SUBCATEGORY_') THEN split_part(tag_name, '_', 2)
+          END
+      ) AS subcategory,
+      STRING_AGG(
+        DISTINCT CASE
+          WHEN starts_with(UPPER(tag_name), 'PRODUCTTYPE_') THEN split_part(tag_name, '_', 2)
+        END,
+        '/'
+        ORDER BY
+          CASE
+            WHEN starts_with(UPPER(tag_name), 'PRODUCTTYPE_') THEN split_part(tag_name, '_', 2)
+          END
+      ) AS product_type,
+      STRING_AGG(
+        DISTINCT CASE
+          WHEN starts_with(UPPER(tag_name), 'GENDER_') THEN split_part(tag_name, '_', 2)
+        END,
+        '/'
+        ORDER BY
+          CASE
+            WHEN starts_with(UPPER(tag_name), 'GENDER_') THEN split_part(tag_name, '_', 2)
+          END
+      ) AS gender,
+      STRING_AGG(
+        DISTINCT CASE
+          WHEN starts_with(UPPER(tag_name), 'ARTICLE TYPE_') THEN split_part(tag_name, '_', 2)
+        END,
+        '/'
+        ORDER BY
+          CASE
+            WHEN starts_with(UPPER(tag_name), 'ARTICLE TYPE_') THEN split_part(tag_name, '_', 2)
+          END
+      ) AS article_type
+    FROM
+      product_tags_raw
+    GROUP BY
+      product_id
+  ),
+  mobiles AS (
+    SELECT DISTINCT
+      mobile
+    FROM
+      orders_in_range
+  ),
+  first_order AS (
+    SELECT DISTINCT
+      ON (oo.mobile) oo.mobile,
+      oo.order_id
+    FROM
+      order_order oo
+      JOIN mobiles m ON m.mobile = oo.mobile
+    WHERE
+      oo.status NOT IN ('OPEN', 'FAILED')
+      AND oo.delivery_type <> 'EXCHANGE'
+    ORDER BY
+      oo.mobile,
+      oo.create_date
+  ),
+  pay AS (
+    SELECT
+      order_id,
+      MAX(mode) AS mode,
+      MAX(status) AS status
+    FROM
+      payment_payment
+    WHERE
+      status IN ('COMPLETED', 'POD_COMPLETED')
+    GROUP BY
+      order_id
+  ),
+  returns_agg AS (
+    SELECT
+      order_item_id,
+      SUM(quantity) AS quantity,
+      SUM(cancelled_by_dashboard) AS cancelled_by_dashboard,
+      SUM(rto) AS rto,
+      SUM(cancelled_by_user) AS cancelled_by_user
+    FROM
+      (
+        SELECT
+          roi.order_item_id,
+          CASE
+            WHEN ro.status NOT IN (
+              'OPEN',
+              'ACCEPTED',
+              'CANCELLED',
+              'DELIVERY_CANCELLED',
+              'PICKUP_CANCELLED',
+              'RETURN_CANCELLED',
+              'RETURN_REJECTED',
+              'ATTEMPT_FAILED'
+            )
+            AND oo.status IN (
+              'COMPLETED',
+              'PACKED',
+              'SHIPPED',
+              'OUT_FOR_DELIVERY',
+              'ACCEPTED'
+            ) THEN roi.quantity
+          END AS quantity,
+          CASE
+            WHEN oo.status = 'CANCELLED'
+            AND NOT oo.log_rto
+            AND ro.return_type = 'DASHBOARD_CANCELLED' THEN CASE
+              WHEN oo.log_packed THEN oi.fulfilled_quantity
+              ELSE oi.quantity
+            END
+          END AS cancelled_by_dashboard,
+          CASE
+            WHEN oo.status = 'CANCELLED'
+            AND (
+              oo.log_rto
+              OR ro.return_type = 'RTO'
+            ) THEN CASE
+              WHEN oo.log_packed THEN oi.fulfilled_quantity
+              ELSE oi.quantity
+            END
+          END AS rto,
+          CASE
+            WHEN oo.status = 'CANCELLED'
+            AND NOT oo.log_rto
+            AND ro.return_type LIKE 'USER%' THEN CASE
+              WHEN oo.log_packed THEN oi.fulfilled_quantity
+              ELSE oi.quantity
+            END
+          END AS cancelled_by_user,
+          ROW_NUMBER() OVER (
+            PARTITION BY
+              roi.order_item_id,
+              CASE
+                WHEN oo.status = 'CANCELLED' THEN 'FIXED'
+                ELSE ro.id::text
+              END
+            ORDER BY
+              ro.create_date ASC
+          ) AS rn
+        FROM
+          order_returnorderitem roi
+          JOIN order_returnorder ro ON roi.return_order_id = ro.id
+          JOIN order_orderitem oi ON oi.id = roi.order_item_id
+          JOIN orders_in_range oo ON oo.id = oi.order_id
+        WHERE
+          LOWER(ro.return_type) NOT LIKE '%exchange%'
+      ) roi_inner
+    WHERE
+      rn = 1
+    GROUP BY
+      order_item_id
+  ),
+  base AS (
+    SELECT
+      oo.order_id,
+      oo.invoice_id,
+      oo.mobile,
+      oo.status,
+      CASE
+        WHEN oo.status = 'CANCELLED'
+        AND oo.log_packed THEN 'cancelled_after_packed'
+        WHEN oo.status = 'CANCELLED'
+        AND NOT oo.log_packed THEN 'cancelled_before_packed'
+        ELSE oo.status
+      END AS status_modified,
+      ss.code AS store_code,
+      ' ' || to_char(oo.ts_ist::date, 'YYYY-MM-DD') AS order_date,
+      oo.ts_ist AS order_timestamp,
+      EXTRACT(
+        HOUR
+        FROM
+          oo.ts_ist
+      )::int AS order_hour,
+      EXTRACT(
+        MINUTE
+        FROM
+          oo.ts_ist
+      )::int AS order_mins,
+      to_char(oo.ts_ist, 'YYYY-MM') AS order_month,
+      'Wk' || ' | ' || to_char(
+        oo.ts_ist::date - (
+          (
+            EXTRACT(
+              DOW
+              FROM
+                oo.ts_ist
+            )::int + 1
+          ) % 7
+        ),
+        'YY/MM/DD'
+      ) || ' to ' || to_char(
+        oo.ts_ist::date - (
+          (
+            EXTRACT(
+              DOW
+              FROM
+                oo.ts_ist
+            )::int + 1
+          ) % 7
+        ) + 6,
+        'YY/MM/DD'
+      ) AS week_label,
+      CASE
+        WHEN ss.code = 'slikk201' THEN 'jaipur'
+        ELSE 'bangalore'
+      END AS city,
+      CASE
+        WHEN fo.order_id = oo.order_id THEN 'new'
+        ELSE 'repeat'
+      END AS new_or_repeat_order,
+      oo.pincode,
+      oo.delivery_type,
+      oo.status AS order_status,
+      oo.distance,
+      oo.device_type,
+      oo.delivery::numeric / COUNT(oi.id) OVER (
+        PARTITION BY
+          oo.invoice_id
+      ) AS avg_delivery_fee_num,
+      oo.coupon_code,
+      pt.division,
+      COALESCE(pt.fashion_style, 'NA') AS fashion_style,
+      COALESCE(pb.name, 'NA') AS brand,
+      pt.category,
+      pt.subcategory,
+      pt.product_type,
+      pt.article_type,
+      pp.color,
+      pp.size,
+      pt.gender,
+      COALESCE(u.gender, 'NA') AS user_gender,
+      pp.variant_id AS style_code,
+      pp.name AS product_name,
+      pp.sku,
+      pp.skid,
+      oi.mrp::numeric AS mrp_num,
+      oi.sp::numeric AS sp_num,
+      oi.brand_offer_sp::numeric AS brand_offer_sp_num,
+      oi.prorated_price::numeric AS prorated_price_num,
+      oi.final_price::numeric AS final_price_num,
+      oi.quantity,
+      sc.code as company_code,
+      CASE
+        WHEN oo.status NOT IN (
+          'CANCELLED',
+          'DECLINED',
+          'RTO_CANCELLED',
+          'RTO_DELIVERED',
+          'RTO_INITIATED'
+        ) THEN oi.fulfilled_quantity
+        ELSE 0
+      END AS fulfilled_quantity,
+      CASE
+        WHEN oo.status <> 'CANCELLED' THEN oi.quantity - oi.fulfilled_quantity
+        WHEN oo.status = 'CANCELLED'
+        AND oo.log_packed THEN oi.quantity - oi.fulfilled_quantity
+        ELSE 0
+      END AS declined_qty,
+      CASE
+        WHEN oo.status IN ('CANCELLED', 'RTO_DELIVERED', 'RTO_INITIATED') THEN CASE
+          WHEN oo.log_packed THEN oi.fulfilled_quantity
+          ELSE oi.quantity
+        END
+        ELSE 0
+      END AS cancelled_qty,
+      COALESCE(ra.cancelled_by_dashboard, 0) AS cancelled_by_dashboard_qty,
+      COALESCE(ra.cancelled_by_user, 0) AS cancelled_by_user_qty,
+      COALESCE(ra.rto, 0) + COALESCE(
+        CASE
+          WHEN oo.status IN ('RTO_DELIVERED', 'RTO_INITIATED') THEN oi.fulfilled_quantity
+        END,
+        0
+      ) AS cancelled_rto_qty,
+      COALESCE(ra.quantity, 0) AS return_quantity,
+      GREATEST(
+        CASE
+          WHEN oo.status NOT IN (
+            'CANCELLED',
+            'DECLINED',
+            'RTO_CANCELLED',
+            'RTO_DELIVERED',
+            'RTO_INITIATED'
+          ) THEN COALESCE(oi.fulfilled_quantity, 0)
+          ELSE 0
+        END - COALESCE(ra.quantity, 0),
+        0
+      ) AS net_qty_sold,
+      oi.points_discount::numeric AS points_discount_num,
+      oi.loyalty_discount::numeric AS loyalty_discount_num,
+      oi.coupon_discount::numeric AS coupon_discount_num,
+      oi.other_discounts::numeric AS other_discounts_num,
+      COALESCE(
+        oi.points_discount::numeric + oi.loyalty_discount::numeric + oi.coupon_discount::numeric + COALESCE(CAST(oi.other_discounts AS integer), 0),
+        0
+      ) AS total_discount_num,
+      COALESCE(p1.mode, p2.mode, 'NA') AS payment_mode,
+      COALESCE(p1.status, p2.status, 'NA') AS payment_status
+    FROM
+      orders_in_range oo
+      JOIN store_store ss ON oo.store_id = ss.id
+      JOIN order_orderitem oi ON oo.id = oi.order_id
+      JOIN product_product pp ON pp.id = oi.product_id
+      join store_company sc on sc.id=pp.company_id
+      JOIN product_brand pb ON pb.id = pp.brand_id
+      JOIN first_order fo ON fo.mobile = oo.mobile
+      JOIN product_tags pt ON pt.product_id = pp.id
+      LEFT JOIN pay p1 ON p1.order_id::text = oo.order_id::text
+      LEFT JOIN pay p2 ON p2.order_id::text = oo.uuid::text
+      LEFT JOIN authentication_user u ON u.mobile = oo.mobile
+      LEFT JOIN returns_agg ra ON ra.order_item_id = oi.id
+  ),
+  remittance_dump AS (
+    SELECT
+      order_id,
+      invoice_id,
+      mobile,
+      status,
+      status_modified,
+      store_code,
+      order_date,
+      order_timestamp,
+      order_hour,
+      order_mins,
+      order_month,
+      week_label,
+      city,
+      new_or_repeat_order,
+      pincode,
+      delivery_type,
+      order_status,
+      distance,
+      device_type,
+      to_char(avg_delivery_fee_num, 'FM9999999999990.00') AS avg_delivery_fee,
+      coupon_code,
+      division,
+      fashion_style,
+      company_code,
+      brand,
+      category,
+      subcategory,
+      article_type,
+      product_type,
+      color,
+      size,
+      gender,
+      user_gender,
+      style_code,
+      product_name,
+      sku,
+      skid,
+      to_char(mrp_num, 'FM9999999999990.00') AS mrp,
+      to_char(sp_num, 'FM9999999999990.00') AS sp,
+      to_char(brand_offer_sp_num, 'FM9999999999990.00') AS brand_offer_sp,
+      to_char(prorated_price_num, 'FM9999999999990.00') AS prorated_price,
+      to_char(final_price_num, 'FM9999999999990.00') AS final_price,
+      quantity,
+      fulfilled_quantity,
+      declined_qty,
+      cancelled_qty,
+      cancelled_by_dashboard_qty,
+      cancelled_by_user_qty,
+      cancelled_rto_qty,
+      return_quantity,
+      net_qty_sold,
+      to_char(points_discount_num, 'FM9999999999990.00') AS points_discount,
+      to_char(loyalty_discount_num, 'FM9999999999990.00') AS loyalty_discount,
+      to_char(coupon_discount_num, 'FM9999999999990.00') AS coupon_discount,
+      to_char(other_discounts_num, 'FM9999999999990.00') AS other_discounts,
+      to_char(total_discount_num, 'FM9999999999990.00') AS total_discount,
+      to_char(
+        net_qty_sold * (sp_num - prorated_price_num),
+        'FM9999999999990.00'
+      ) AS net_discount,
+      to_char(sp_num * quantity, 'FM9999999999990.00') AS gmv,
+      to_char(sp_num * declined_qty, 'FM9999999999990.00') AS declined_amount,
+      to_char(sp_num * cancelled_qty, 'FM9999999999990.00') AS cancelled_amount,
+      to_char(
+        sp_num * cancelled_by_dashboard_qty,
+        'FM9999999999990.00'
+      ) AS cancelled_by_dashboard_amount,
+      to_char(sp_num * cancelled_rto_qty, 'FM9999999999990.00') AS cancelled_rto_amount,
+      to_char(
+        sp_num * cancelled_by_user_qty,
+        'FM9999999999990.00'
+      ) AS cancelled_by_user_amount,
+      to_char(sp_num * return_quantity, 'FM9999999999990.00') AS return_amount,
+      to_char(
+        sp_num * quantity - sp_num * declined_qty - sp_num * cancelled_qty - sp_num * return_quantity,
+        'FM9999999999990.00'
+      ) AS nmv_before_discount,
+      to_char(
+        sp_num * quantity - sp_num * declined_qty - sp_num * cancelled_qty - sp_num * return_quantity - net_qty_sold * (sp_num - prorated_price_num),
+        'FM9999999999990.00'
+      ) AS nmv_after_discount,
+      payment_mode,
+      payment_status,
+      -- TRADE DISCOUNT = SP / MRP
+      ROUND(
+    (1 - (sp_num / NULLIF(mrp_num, 0))) * 100,
+    2
+) AS trade_discount
+    FROM
+      base
+  )
+SELECT
+brand as "BRAND",ROUND(SUM(CAST(gmv AS numeric)) / 100000,2) AS "TOTAL_GMV_LAKHS",sum(quantity) as "QTY",round((SUM(CAST(gmv AS numeric))/sum(quantity)),2) as "ASP",
+ROUND(AVG(trade_discount), 2) AS "AVG_TD"
+FROM
+ remittance_dump
+group by 1
+order by ROUND(SUM(CAST(gmv AS numeric)) / 100000,2) desc;
