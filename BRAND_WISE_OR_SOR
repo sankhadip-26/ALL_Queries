@@ -1,0 +1,13 @@
+SELECT
+    LOWER(pb.name)         AS brand,
+    -- count(distinct pvo.business_model) as types
+    MAX(pvo.business_model) AS business_model
+    -- pvo.business_model as business_model
+  FROM `slikk-prod.slikkprodpublic.product_vendorpurchaseorder`     pvo
+  JOIN `slikk-prod.slikkprodpublic.product_vendorpurchaseorderitem` pvoi ON pvo.id = pvoi.order_id
+  JOIN `slikk-prod.slikkprodpublic.product_product`                 pp   ON pp.id = pvoi.product_id
+  JOIN `slikk-prod.slikkprodpublic.product_brand`                   pb   ON pb.id = pp.brand_id
+  WHERE DATETIME(pvo.created_at, 'Asia/Kolkata') >= DATETIME '2026-03-01 00:00:00'
+    AND LOWER(pvo.status) <> 'cancelled'
+    -- and LOWER(pb.name)='homesake'
+  GROUP BY LOWER(pb.name)
