@@ -1,0 +1,197 @@
+WITH product_tags_raw AS (
+  SELECT
+    ti.object_id AS product_id,
+    tag.id AS tag_id,
+    tag.name AS tag_name
+  FROM slikk-prod.slikkprodpublic.taggit_taggeditem ti
+  JOIN slikk-prod.slikkprodpublic.taggit_tag tag
+    ON ti.tag_id = tag.id
+),
+
+product_tags AS (
+  SELECT
+    product_id,
+
+    MAX_BY(
+      SPLIT(tag_name, '_')[SAFE_OFFSET(1)],
+      IF(STARTS_WITH(UPPER(tag_name), 'COLORFAMILY_'), tag_id, NULL)
+    ) AS color_family,
+
+    MAX_BY(
+      SPLIT(tag_name, '_')[SAFE_OFFSET(1)],
+      IF(STARTS_WITH(UPPER(tag_name), 'GENDER_'), tag_id, NULL)
+    ) AS gender
+
+  FROM product_tags_raw
+  GROUP BY product_id
+),
+
+-- WITH product_tags_raw AS (
+--   SELECT ti.object_id AS product_id, tag.name AS tag_name
+--   FROM slikk-prod.slikkprodpublic.taggit_taggeditem ti
+--   JOIN slikk-prod.slikkprodpublic.taggit_tag tag ON ti.tag_id = tag.id
+-- ),
+-- product_tags AS (
+--   SELECT
+--     product_id,
+--     STRING_AGG(DISTINCT IF(STARTS_WITH(UPPER(tag_name), 'COLORFAMILY_'),        SPLIT(tag_name, '_')[SAFE_OFFSET(1)], NULL), '/' ORDER BY IF(STARTS_WITH(UPPER(tag_name), 'COLORFAMILY_'),        SPLIT(tag_name, '_')[SAFE_OFFSET(1)], NULL)) AS color_family,
+
+--       STRING_AGG(DISTINCT IF(STARTS_WITH(UPPER(tag_name), 'GENDER_'),        SPLIT(tag_name, '_')[SAFE_OFFSET(1)], NULL), '/' ORDER BY IF(STARTS_WITH(UPPER(tag_name), 'GENDER_'),        SPLIT(tag_name, '_')[SAFE_OFFSET(1)], NULL)) AS gender
+
+--   FROM product_tags_raw
+--   GROUP BY product_id
+-- ),
+new_tags as (
+select p.id,
+p.skid,
+ps.style_id,
+COALESCE(STRING_AGG(distinct case when pat.key='gender' then pa.value end order by case when pat.key='gender' then pa.value end),MAX(pt.gender)) as gender,
+STRING_AGG(distinct a.name order by a.name) as article_type,
+STRING_AGG(distinct pc.name order by pc.name) as category,
+STRING_AGG(distinct d.name order by d.name) as division,
+max(pb.name) as brand,
+STRING_AGG(distinct case when pat.key="colors" then pa.value end) as color,
+STRING_AGG(distinct case when pat.key="tops_fit" then pa.value end) as tops_fit,
+STRING_AGG(distinct case when pat.key="bottoms_fit" then pa.value end) as bottoms_fit,
+CONCAT(
+  COALESCE(
+    STRING_AGG(DISTINCT CASE WHEN pat.key = 'tops_fit' THEN pa.value END),
+    ''
+  ),
+  CASE
+    WHEN STRING_AGG(DISTINCT CASE WHEN pat.key = 'tops_fit' THEN pa.value END) IS NOT NULL
+         AND STRING_AGG(DISTINCT CASE WHEN pat.key = 'bottoms_fit' THEN pa.value END) IS NOT NULL
+    THEN ','
+    ELSE ''
+  END,
+  COALESCE(
+    STRING_AGG(DISTINCT CASE WHEN pat.key = 'bottoms_fit' THEN pa.value END),
+    ''
+  )
+) AS fit,
+STRING_AGG(distinct case when pat.key="material" then pa.value end) as material,
+STRING_AGG(distinct case when pat.key="materials" then pa.value end) as materials,
+STRING_AGG(distinct case when pat.key="sleeve_type" then pa.value end) as sleeve_type
+from slikk-prod.slikkprodpublic.product_product as p
+inner join slikk-prod.slikkprodpublic.product_brand pb on pb.id=p.brand_id
+inner join slikk-prod.slikkprodpublic.product_style ps on p.style_ref_id = ps.id
+left join slikk-prod.slikkprodpublic.product_styleattribute ps2 on ps.id = ps2.style_id
+left join slikk-prod.slikkprodpublic.product_attribute pat on pat.id=ps2.attribute_id
+left join slikk-prod.slikkprodpublic.product_attributevalue pa on ps2.attribute_value_id = pa.id
+left join slikk-prod.slikkprodpublic.product_articletype  a on a.id=ps.article_type_id
+left join slikk-prod.slikkprodpublic.product_category pc on pc.id=a.category_id
+left join slikk-prod.slikkprodpublic.product_division d on pc.division_id=d.id
+left join product_tags pt on pt.product_id=p.id
+group by 1,2,3
+),
+-- =========================================================================
+-- BASE: plan_option_level_overall_test (unchanged)
+-- =========================================================================
+missing_taxonomy_tags as (
+SELECT
+  skid,
+  MAX(sku_code)           AS sku_code,
+  MAX(company_code)       AS company_code,
+  MAX(gender)             AS gender,
+  MAX(article_type)       AS article_type,
+  MAX(category_name)      AS category_name,
+  MAX(division_name)      AS division_name,
+  MAX(color_family)       AS color_family,
+  MAX(tops_fit)           AS tops_fit,
+  MAX(bottoms_fit)        AS bottoms_fit,
+  MAX(material)           AS material,
+  MAX(sleeve_type)        AS sleeve_type,
+  MAX(jewelry_material)   AS jewelry_material,
+  MAX(case_material)      AS case_material,
+  MAX(strap_material)     AS strap_material,
+  MAX(sleeve_length)      AS sleeve_length,
+  MAX(upper_material)     AS upper_material,
+  MAX(insole_material)    AS insole_material,
+  MAX(materials)          AS materials,
+  MAX(base_material)      AS base_material,
+  MAX(wood_material_type) AS wood_material_type,
+  MAX(straps_material)    AS straps_material
+FROM `slikk-prod.slikkanalytics.missing_skids_taxonomy`
+GROUP BY skid
+),
+final_tags as (
+SELECT
+  COALESCE(nt.id, mt.id)                          AS product_id,
+  nt.style_id,
+  COALESCE(nt.skid, mt.skid)                          AS skid,
+  COALESCE(nt.brand,       mt.brand)                AS brand,
+  COALESCE(nt.gender,       mt.gender)                AS gender,
+  COALESCE(nt.article_type, mt.article_type)          AS article_type,
+  COALESCE(nt.category,     mt.category_name)         AS category,
+  COALESCE(nt.division,     mt.division_name)         AS division,
+  COALESCE(nt.color,        mt.color_family)          AS color,
+  COALESCE(nt.tops_fit,     mt.tops_fit)              AS tops_fit,
+  COALESCE(nt.bottoms_fit,  mt.bottoms_fit)           AS bottoms_fit,
+  CONCAT(
+  COALESCE(COALESCE(nt.tops_fit,    mt.tops_fit),    ''),
+  CASE
+    WHEN COALESCE(nt.tops_fit,    mt.tops_fit)    IS NOT NULL
+     AND COALESCE(nt.bottoms_fit, mt.bottoms_fit) IS NOT NULL
+    THEN ','
+    ELSE ''
+  END,
+  COALESCE(COALESCE(nt.bottoms_fit, mt.bottoms_fit), '')
+  ) AS fit,
+  COALESCE(nt.material,     mt.material)              AS material,
+  COALESCE(nt.materials,    mt.materials)             AS materials,
+  COALESCE(nt.sleeve_type,  mt.sleeve_type)           AS sleeve_type,
+  mt.jewelry_material,
+  mt.case_material,
+  mt.strap_material,
+  mt.sleeve_length,
+  mt.upper_material,
+  mt.insole_material,
+  mt.base_material,
+  mt.wood_material_type,
+  mt.straps_material,
+  CASE
+    WHEN nt.skid IS NOT NULL AND mt.skid IS NOT NULL THEN 'both'
+    WHEN nt.skid IS NOT NULL                         THEN 'new_only'
+    ELSE                                                  'missing_only'
+  END AS source
+FROM new_tags nt
+FULL OUTER JOIN (select m.* ,
+lower(pb.name) as brand , pp.id from missing_taxonomy_tags m join slikk-prod.slikkprodpublic.product_product pp on pp.skid=m.skid join slikk-prod.slikkprodpublic.product_brand pb on pb.id=pp.brand_id) mt
+  ON nt.skid = mt.skid
+
+
+
+),
+bu_tagging as (
+  select
+  LOWER(COALESCE(ft.gender, 'NA')) as gender ,
+  LOWER(COALESCE(ft.division, 'NA'))  as division ,
+  LOWER(COALESCE(ft.category, 'NA')) as category,
+  LOWER(COALESCE(ft.article_type, 'NA')) as article_type,
+  string_agg(distinct mstt.business_unit order by  mstt.business_unit) as business_unit,
+  string_agg(distinct mstt.master_bu order by mstt.master_bu) as master_bu
+  from final_tags ft
+  left join slikk-prod.slikkanalytics.missing_skid_taxonomy_tags mstt
+    ON LOWER(COALESCE(ft.gender, 'NA')) = LOWER(COALESCE(mstt.gender, 'NA'))
+    AND LOWER(COALESCE(ft.division, 'NA')) = LOWER(COALESCE(mstt.division, 'NA'))
+    AND LOWER(COALESCE(ft.category, 'NA')) = LOWER(COALESCE(mstt.category, 'NA'))
+    AND LOWER(COALESCE(ft.article_type, 'NA')) = LOWER(COALESCE(mstt.article_type, 'NA'))
+  group by all
+)
+select ft.* except(style_id, gender) , bt.business_unit, bt.master_bu,
+COALESCE(
+  ft.style_id,
+  CASE
+    WHEN pt.color_family IS NULL THEN CONCAT(pp.variant_id, "_", pp.company_id)
+    ELSE CONCAT(pp.variant_id, "_", pp.company_id, "_", pt.color_family)
+  END
+) AS style_id,
+COALESCE(ft.gender,pt.gender) as gender,
+from final_tags ft
+left join bu_tagging bt
+on LOWER(COALESCE(ft.gender, 'NA')) = bt.gender
+    AND LOWER(COALESCE(ft.division, 'NA')) = bt.division
+    AND LOWER(COALESCE(ft.category, 'NA')) = bt.category
+    AND LOWER(COALESCE(ft.article_type, 'NA')) = bt.article_type
+left join product_tags pt on pt.product_id=ft.product_id
+left join slikk-prod.slikkprodpublic.product_product pp on pp.id=ft.product_id
