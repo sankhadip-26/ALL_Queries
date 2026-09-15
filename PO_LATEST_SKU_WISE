@@ -1,0 +1,185 @@
+WITH
+  product_tag_values AS (
+    SELECT
+      ti.object_id AS product_id,
+      CASE
+        WHEN tag.name ILIKE 'BRAND*%' THEN 'BRAND'
+        WHEN tag.name ILIKE 'DIVISION*%' THEN 'DIVISION'
+        WHEN tag.name ILIKE 'CATEGORY*%' THEN 'CATEGORY'
+        WHEN tag.name ILIKE 'SUBCATEGORY*%' THEN 'SUBCATEGORY'
+        WHEN tag.name ILIKE 'PRODUCTTYPE*%' THEN 'PRODUCTTYPE'
+        WHEN tag.name ILIKE 'SKU*%' THEN 'SKU'
+        WHEN tag.name ILIKE 'SKID*%' THEN 'SKID'
+      END AS tag_type,
+      NULLIF(SPLIT_PART(tag.name, '*', 2), '') AS tag_value
+    FROM
+      taggit_taggeditem AS ti
+      JOIN taggit_tag AS tag ON tag.id = ti.tag_id
+    WHERE
+      tag.name ILIKE 'BRAND*%'
+      OR tag.name ILIKE 'DIVISION*%'
+      OR tag.name ILIKE 'CATEGORY*%'
+      OR tag.name ILIKE 'SUBCATEGORY*%'
+      OR tag.name ILIKE 'PRODUCTTYPE*%'
+      OR tag.name ILIKE 'SKU*%'
+      OR tag.name ILIKE 'SKID*%'
+  ),
+  product_tags AS (
+    SELECT
+      product_id,
+      STRING_AGG(
+        DISTINCT tag_value,
+        '/'
+        ORDER BY
+          tag_value
+      ) FILTER (
+        WHERE
+          tag_type = 'BRAND'
+      ) AS brand,
+      STRING_AGG(
+        DISTINCT tag_value,
+        '/'
+        ORDER BY
+          tag_value
+      ) FILTER (
+        WHERE
+          tag_type = 'DIVISION'
+      ) AS division,
+      STRING_AGG(
+        DISTINCT tag_value,
+        '/'
+        ORDER BY
+          tag_value
+      ) FILTER (
+        WHERE
+          tag_type = 'CATEGORY'
+      ) AS category,
+      STRING_AGG(
+        DISTINCT tag_value,
+        '/'
+        ORDER BY
+          tag_value
+      ) FILTER (
+        WHERE
+          tag_type = 'SUBCATEGORY'
+      ) AS subcategory,
+      STRING_AGG(
+        DISTINCT tag_value,
+        '/'
+        ORDER BY
+          tag_value
+      ) FILTER (
+        WHERE
+          tag_type = 'PRODUCTTYPE'
+      ) AS product_type,
+      STRING_AGG(
+        DISTINCT tag_value,
+        '/'
+        ORDER BY
+          tag_value
+      ) FILTER (
+        WHERE
+          tag_type = 'SKU'
+      ) AS sku,
+      STRING_AGG(
+        DISTINCT tag_value,
+        '/'
+        ORDER BY
+          tag_value
+      ) FILTER (
+        WHERE
+          tag_type = 'SKID'
+      ) AS skid
+    FROM
+      product_tag_values
+    WHERE
+      tag_type IS NOT NULL
+      AND tag_value IS NOT NULL
+    GROUP BY
+      product_id
+  ),
+  final as(
+SELECT
+ po.id AS po_id,
+  (po.created_at AT TIME ZONE 'Asia/Kolkata')::date AS order_date,
+  sc.registered_name,
+  sc.name,
+  po.business_model AS model,
+  pp.sku,
+  SUM(poi.quantity) AS quantity,
+  poi.supplier_mrp,
+  poi.selling_price,
+  SUM(poi.fulfilled_quantity) AS fulfilled_quantity,
+  pp.tax_rate,
+  poi.tax_amount,
+  poi.total_value AS total_purchasable_price
+  FROM
+  product_vendorpurchaseorder AS po
+  JOIN product_vendorpurchaseorderitem AS poi ON poi.order_id = po.id
+  JOIN product_product AS pp ON pp.id = poi.product_id
+  JOIN store_company AS sc ON sc.id = po.company_id
+  LEFT JOIN product_tags AS pt ON pt.product_id = pp.id
+-- WHERE
+--  po.created_at >= (
+--    '2026-08-01'::date::timestamp AT TIME ZONE 'Asia/Kolkata'
+--  )
+--  AND po.created_at < (
+--    '2026-08-31'::date::timestamp AT TIME ZONE 'Asia/Kolkata'
+--  )
+GROUP BY
+  po.id,
+  po.po_nature,
+  po.po_expiry_date,
+  pt.category,
+  (po.created_at AT TIME ZONE 'Asia/Kolkata')::date,
+  sc.registered_name,
+  sc.name,
+  sc.poc_email,
+  pt.brand,
+  po.business_model,
+  sc.gstin,
+  pp.name,
+  pp.sku,
+  pp.skid,
+  pp.hsn,
+  poi.supplier_mrp,
+  poi.selling_price,
+  pp.size,
+  pp.tax_rate,
+  poi.item_value,
+  poi.tax_amount,
+  poi.total_value,
+  po.pricing_strategy,
+  po.company_id
+  ),
+   ranked AS (
+  SELECT
+    *,
+    ROW_NUMBER() OVER (
+      PARTITION BY LOWER(
+        CASE
+          WHEN TRIM(sku) ~ '^[0-9]+$'
+            THEN LTRIM(TRIM(sku), '0')
+          ELSE TRIM(sku)
+        END
+      )
+      ORDER BY order_date DESC
+    ) AS rank
+  FROM final
+)
+SELECT
+  order_date,
+  registered_name,
+  name,
+  model,
+  sku,
+  quantity,
+  supplier_mrp,
+  selling_price,
+  fulfilled_quantity,
+  tax_rate,
+  tax_amount,
+  total_purchasable_price
+FROM ranked
+WHERE rank = 1
+ORDER BY sku;
