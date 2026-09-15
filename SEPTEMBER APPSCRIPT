@@ -1,0 +1,425 @@
+function formatMasterBUDashboard() {
+
+  const ss = SpreadsheetApp.getActiveSpreadsheet();
+  const sheet = ss.getSheetByName("MTD");
+
+  if (!sheet) {
+    throw new Error("Sheet 'MTD' not found.");
+  }
+
+  const startRow = 2; // Row 1 = headers
+  const lastRow = sheet.getLastRow();
+  const lastCol = 7;  // A:G
+
+  if (lastRow < startRow) return;
+
+  const numRows = lastRow - startRow + 1;
+
+  // =========================================================
+  // 1. REMOVE OLD MASTER_BU MERGES
+  // =========================================================
+
+  sheet
+    .getRange(startRow, 1, numRows, 1)
+    .breakApart();
+
+
+  // =========================================================
+  // 2. BASE FORMATTING
+  // =========================================================
+
+  const fullRange = sheet.getRange(1, 1, lastRow, lastCol);
+
+  fullRange
+    .setFontFamily("Arial")
+    .setFontSize(10)
+    .setVerticalAlignment("middle");
+
+
+  // =========================================================
+  // 3. HEADER
+  // =========================================================
+
+  sheet
+    .getRange(1, 1, 1, lastCol)
+    .setFontWeight("bold")
+    .setHorizontalAlignment("center")
+    .setVerticalAlignment("middle")
+    .setBorder(
+      true,
+      true,
+      true,
+      true,
+      true,
+      true,
+      null,
+      SpreadsheetApp.BorderStyle.SOLID_MEDIUM
+    );
+
+
+  // =========================================================
+  // 4. DATA ALIGNMENT
+  // =========================================================
+
+  sheet
+    .getRange(startRow, 1, numRows, 3)
+    .setHorizontalAlignment("left");
+
+  sheet
+    .getRange(startRow, 4, numRows, 4)
+    .setHorizontalAlignment("right");
+
+
+  // =========================================================
+  // 5. READ DATA
+  // =========================================================
+
+  const data = sheet
+    .getRange(startRow, 1, numRows, lastCol)
+    .getValues();
+
+
+  // =========================================================
+  // 6. IDENTIFY ROW TYPES
+  // =========================================================
+
+  let rows = [];
+
+  for (let i = 0; i < data.length; i++) {
+
+    const rowNumber = startRow + i;
+
+    const masterBU = String(data[i][0] ?? "").trim();
+    const brand = String(data[i][1] ?? "").trim();
+    const subcat = String(data[i][2] ?? "").trim();
+
+    const isBrandSubtotal =
+      subcat.toUpperCase() === "SUBTOTAL" &&
+      brand !== "" &&
+      masterBU !== "";
+
+    const isMasterBUSubtotal =
+      brand.toUpperCase() === "SUBTOTAL" &&
+      masterBU !== "";
+
+    const isGrandTotal =
+      masterBU === "" &&
+      brand.toUpperCase() === "SUBTOTAL";
+
+    rows.push({
+      row: rowNumber,
+      masterBU: masterBU,
+      brand: brand,
+      subcat: subcat,
+      isBrandSubtotal: isBrandSubtotal,
+      isMasterBUSubtotal: isMasterBUSubtotal,
+      isGrandTotal: isGrandTotal
+    });
+  }
+
+
+  // =========================================================
+  // 7. FIND MASTER BU BLOCKS
+  // =========================================================
+
+  let buBlocks = [];
+
+  let currentBU = null;
+  let buStartRow = null;
+
+  for (let i = 0; i < rows.length; i++) {
+
+    const r = rows[i];
+
+    // Ignore grand total
+    if (r.isGrandTotal) continue;
+
+    if (r.masterBU !== "" && r.masterBU !== currentBU) {
+
+      // Close previous BU
+      if (currentBU !== null) {
+
+        buBlocks.push({
+          masterBU: currentBU,
+          startRow: buStartRow,
+          endRow: r.row - 1
+        });
+      }
+
+      currentBU = r.masterBU;
+      buStartRow = r.row;
+    }
+  }
+
+  // Close final BU
+  if (currentBU !== null && buStartRow !== null) {
+
+    buBlocks.push({
+      masterBU: currentBU,
+      startRow: buStartRow,
+      endRow: lastRow
+    });
+  }
+
+
+  // =========================================================
+  // 8. FORMAT MASTER BU BLOCKS
+  // =========================================================
+
+  buBlocks.forEach(function(block) {
+
+    const range = sheet.getRange(
+      block.startRow,
+      1,
+      block.endRow - block.startRow + 1,
+      lastCol
+    );
+
+    // Strong outer boundary
+    range.setBorder(
+      true,
+      true,
+      true,
+      true,
+      false,
+      false,
+      null,
+      SpreadsheetApp.BorderStyle.SOLID_MEDIUM
+    );
+
+
+    // Merge MASTER_BU column
+    const buRange = sheet.getRange(
+      block.startRow,
+      1,
+      block.endRow - block.startRow + 1,
+      1
+    );
+
+    buRange
+      .mergeVertically()
+      .setFontWeight("bold")
+      .setHorizontalAlignment("center")
+      .setVerticalAlignment("middle");
+  });
+
+
+  // =========================================================
+  // 9. FIND BRAND BLOCKS
+  // =========================================================
+
+  let brandBlocks = [];
+
+  let currentBrand = null;
+  let currentBrandBU = null;
+  let brandStartRow = null;
+
+  for (let i = 0; i < rows.length; i++) {
+
+    const r = rows[i];
+
+    // Skip subtotal rows
+    if (r.isBrandSubtotal || r.isMasterBUSubtotal || r.isGrandTotal) {
+      continue;
+    }
+
+    // Skip blank rows
+    if (r.brand === "") {
+      continue;
+    }
+
+    // New brand
+    if (
+      r.brand !== currentBrand ||
+      r.masterBU !== currentBrandBU
+    ) {
+
+      // Close previous brand
+      if (
+        currentBrand !== null &&
+        brandStartRow !== null
+      ) {
+
+        brandBlocks.push({
+          brand: currentBrand,
+          masterBU: currentBrandBU,
+          startRow: brandStartRow,
+          endRow: r.row - 1
+        });
+      }
+
+      currentBrand = r.brand;
+      currentBrandBU = r.masterBU;
+      brandStartRow = r.row;
+    }
+  }
+
+
+  // =========================================================
+  // 10. FORMAT BRAND BLOCKS
+  // =========================================================
+
+  brandBlocks.forEach(function(block) {
+
+    const range = sheet.getRange(
+      block.startRow,
+      1,
+      block.endRow - block.startRow + 1,
+      lastCol
+    );
+
+    // Thin bottom boundary for each brand
+    range.setBorder(
+      false,
+      false,
+      true,
+      false,
+      false,
+      false,
+      null,
+      SpreadsheetApp.BorderStyle.SOLID
+    );
+  });
+
+
+  // =========================================================
+  // 11. FORMAT BRAND SUBTOTAL ROWS
+  // =========================================================
+
+  rows.forEach(function(r) {
+
+    if (r.isBrandSubtotal) {
+
+      const range = sheet.getRange(
+        r.row,
+        1,
+        1,
+        lastCol
+      );
+
+      range
+        .setFontWeight("bold")
+        .setFontSize(10)
+        .setBorder(
+          false,
+          false,
+          true,
+          false,
+          false,
+          false,
+          null,
+          SpreadsheetApp.BorderStyle.SOLID_MEDIUM
+        );
+    }
+  });
+
+
+  // =========================================================
+  // 12. FORMAT MASTER BU SUBTOTAL ROWS
+  // =========================================================
+
+  rows.forEach(function(r) {
+
+    if (r.isMasterBUSubtotal) {
+
+      const range = sheet.getRange(
+        r.row,
+        1,
+        1,
+        lastCol
+      );
+
+      range
+        .setFontWeight("bold")
+        .setFontSize(10)
+        .setBorder(
+          true,
+          false,
+          true,
+          false,
+          false,
+          false,
+          null,
+          SpreadsheetApp.BorderStyle.SOLID_MEDIUM
+        );
+    }
+  });
+
+
+  // =========================================================
+  // 13. FORMAT GRAND TOTAL
+  // =========================================================
+
+  rows.forEach(function(r) {
+
+    if (r.isGrandTotal) {
+
+      const range = sheet.getRange(
+        r.row,
+        1,
+        1,
+        lastCol
+      );
+
+      range
+        .setFontWeight("bold")
+        .setFontSize(11)
+        .setBorder(
+          true,
+          true,
+          true,
+          true,
+          false,
+          false,
+          null,
+          SpreadsheetApp.BorderStyle.SOLID_MEDIUM
+        );
+    }
+  });
+
+
+  // =========================================================
+  // 14. NUMBER FORMATTING
+  // =========================================================
+
+  // QTY
+  sheet
+    .getRange(startRow, 4, numRows, 1)
+    .setNumberFormat("#,##0");
+
+  // ASP
+  sheet
+    .getRange(startRow, 5, numRows, 1)
+    .setNumberFormat("#,##0");
+
+  // AVG TD
+  sheet
+    .getRange(startRow, 6, numRows, 1)
+    .setNumberFormat("0");
+
+  // GMV
+  sheet
+    .getRange(startRow, 7, numRows, 1)
+    .setNumberFormat("0.00");
+
+
+  // =========================================================
+  // 15. COLUMN WIDTHS
+  // =========================================================
+
+  sheet.setColumnWidth(1, 120);  // MASTER_BU
+  sheet.setColumnWidth(2, 150);  // BRAND
+  sheet.setColumnWidth(3, 170);  // SUBCAT
+  sheet.setColumnWidth(4, 80);   // QTY
+  sheet.setColumnWidth(5, 90);   // ASP
+  sheet.setColumnWidth(6, 100);  // AVG TD
+  sheet.setColumnWidth(7, 110);  // GMV
+
+
+  // =========================================================
+  // 16. FREEZE HEADER
+  // =========================================================
+
+  sheet.setFrozenRows(1);
+
+}
