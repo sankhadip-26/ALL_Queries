@@ -1,0 +1,86 @@
+price point query:
+WITH new_tags as ()
+WITH pp_option_sales AS (
+  SELECT
+    nt.style_id AS option_id,
+    IF(GROUPING(ss.code) = 1, 'overall', ss.code) AS store_code,
+    ANY_VALUE(nt.category) AS category,
+    SUM(oi.sp * oi.quantity) AS gmv,
+    SUM(oi.quantity) AS qty
+  FROM slikk-prod.slikkprodpublic.order_order oo
+  JOIN slikk-prod.slikkprodpublic.order_orderitem oi ON oo.id = oi.order_id
+  JOIN new_tags nt ON nt.id = oi.product_id
+  JOIN slikk-prod.slikkprodpublic.store_store ss ON ss.id = oo.store_id
+  WHERE oo.status NOT IN ('OPEN','FAILED') AND oo.delivery_type != 'EXCHANGE'
+    AND oo.create_date >= TIMESTAMP('2026-01-01 00:00:00', 'Asia/Kolkata')
+    AND ss.code IN ('slikk101','slikk102','slikk103','slikk104','slikk105','slikk106','slikk107','slikk108')
+  GROUP BY GROUPING SETS ((nt.style_id, ss.code), (nt.style_id))
+),
+pp_option_cat_sales AS (
+  SELECT option_id, store_code, category, qty AS option_units,
+    SAFE_DIVIDE(gmv, qty) AS price_basis_value,
+    SAFE_DIVIDE(SUM(gmv) OVER (PARTITION BY category, store_code),
+                SUM(qty) OVER (PARTITION BY category, store_code)) AS cat_asp
+  FROM pp_option_sales
+),
+pp_cat_asp_store   AS (SELECT DISTINCT category, store_code, cat_asp FROM pp_option_cat_sales WHERE store_code != 'overall'),
+pp_cat_asp_overall AS (SELECT DISTINCT category, cat_asp FROM pp_option_cat_sales WHERE store_code = 'overall'),
+pp_cat_catalog AS (
+  SELECT nt.category, AVG(pp.sp) AS cat_asp
+  FROM slikk-prod.slikkprodpublic.product_product pp
+  JOIN new_tags nt ON nt.id = pp.id
+  WHERE nt.category IS NOT NULL GROUP BY 1
+),
+pp_sold AS (SELECT DISTINCT option_id, store_code FROM pp_option_sales),
+pp_stores AS (
+  SELECT s FROM UNNEST([
+    'overall','slikk101','slikk102','slikk103','slikk104',
+    'slikk105','slikk106','slikk107','slikk108'
+  ]) AS s
+),
+pp_catalog_base AS (
+  SELECT nt.style_id AS option_id, ANY_VALUE(nt.category) AS category, AVG(pp.sp) AS sp
+  FROM slikk-prod.slikkprodpublic.product_product pp
+  JOIN new_tags nt ON nt.id = pp.id GROUP BY 1
+),
+pp_unsold AS (
+  SELECT co.option_id, st.s AS store_code, co.category, 0 AS option_units,
+    co.sp AS price_basis_value,
+    COALESCE(cbs.cat_asp, cbo.cat_asp, cca.cat_asp) AS cat_asp
+  FROM pp_catalog_base co
+  CROSS JOIN pp_stores st
+  LEFT JOIN pp_sold so          ON so.option_id = co.option_id AND so.store_code = st.s
+  LEFT JOIN pp_cat_asp_store cbs ON cbs.category = co.category AND cbs.store_code = st.s
+  LEFT JOIN pp_cat_asp_overall cbo ON cbo.category = co.category
+  LEFT JOIN pp_cat_catalog cca ON cca.category = co.category
+  WHERE so.option_id IS NULL
+),
+pp_combined AS (
+  SELECT option_id, store_code, option_units, price_basis_value, COALESCE(cat_asp, 0) AS cat_asp
+  FROM pp_option_cat_sales
+  UNION ALL
+  SELECT option_id, store_code, option_units, price_basis_value, COALESCE(cat_asp, 0)
+  FROM pp_unsold
+)
+SELECT option_id, store_code,
+  CASE
+    WHEN p70 = p120 AND p120 = p170 THEN 'E'
+    WHEN price_basis_value >= p170 THEN 'P'
+    WHEN price_basis_value >= p120 AND price_basis_value < p170 THEN 'MP'
+    WHEN price_basis_value >= p70  AND price_basis_value < p120 THEN 'M'
+    ELSE 'E'
+  END AS price_point,
+  CASE
+    WHEN p70 = p120 AND p120 = p170            THEN CONCAT('<', p70)
+    WHEN price_basis_value >= p170              THEN CONCAT('>', p170)
+    WHEN price_basis_value >= p120 AND price_basis_value < p170 THEN CONCAT(p120, ' to ', p170)
+    WHEN price_basis_value >= p70  AND price_basis_value < p120 THEN CONCAT(p70, ' to ', p120)
+    ELSE CONCAT('<', p70)
+  END AS price_point_threshold
+FROM (
+  SELECT option_id, store_code, price_basis_value,
+    GREATEST(CAST(ROUND(0.7 * cat_asp, -2) AS INT64), 100) AS p70,
+    GREATEST(CAST(ROUND(1.2 * cat_asp, -2) AS INT64), 100) AS p120,
+    GREATEST(CAST(ROUND(1.7 * cat_asp, -2) AS INT64), 100) AS p170
+  FROM pp_combined
+);
