@@ -25,3 +25,10 @@ product_tags AS (
   FROM product_tags_raw
   GROUP BY product_id
 ),
+
+new_tags:
+
+SELECT DISTINCT
+  product_id AS id, style_id, gender, division, category,
+  article_type, brand, color, business_unit, master_bu, fit, material, sleeve_type,
+FROM slikk-prod.slikkanalytics.new_taxonomy_product_tags;
