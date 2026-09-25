@@ -1,0 +1,27 @@
+WITH product_tags_raw AS (
+  SELECT
+    ti.object_id AS product_id,
+    tag.id AS tag_id,
+    tag.name AS tag_name
+  FROM slikk-prod.slikkprodpublic.taggit_taggeditem ti
+  JOIN slikk-prod.slikkprodpublic.taggit_tag tag
+    ON ti.tag_id = tag.id
+),
+
+product_tags AS (
+  SELECT
+    product_id,
+
+    MAX_BY(
+      SPLIT(tag_name, '_')[SAFE_OFFSET(1)],
+      IF(STARTS_WITH(UPPER(tag_name), 'COLORFAMILY_'), tag_id, NULL)
+    ) AS color_family,
+
+    MAX_BY(
+      SPLIT(tag_name, '_')[SAFE_OFFSET(1)],
+      IF(STARTS_WITH(UPPER(tag_name), 'GENDER_'), tag_id, NULL)
+    ) AS gender
+
+  FROM product_tags_raw
+  GROUP BY product_id
+),
