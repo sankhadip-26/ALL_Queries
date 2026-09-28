@@ -1,0 +1,262 @@
+WITH
+  sku_in_stock_days AS (
+    SELECT
+      sku,
+      (company_code) AS company_code,
+      create_date,
+      store_code,
+      sum(quantity) AS qty
+    FROM slikk-prod.slikkprodpublic.product_inventorysnapshot
+    WHERE create_date < date(current_date("Asia/Kolkata"))
+    GROUP BY 1, 2, 3, 4
+  ),
+
+  sales AS (
+    SELECT
+      pp.sku AS sku,
+      (sc.code) AS company_code,
+      date(oo.create_date + INTERVAL '330' minute) AS order_date,
+      lower(ss.code) AS store_code,
+      sum(oi.quantity) AS qty_ordered
+    FROM slikk-prod.slikkprodpublic.order_order oo
+    JOIN slikk-prod.slikkprodpublic.order_orderitem oi
+      ON oo.id = oi.order_id
+    JOIN slikk-prod.slikkprodpublic.product_product pp
+      ON pp.id = oi.product_id
+    JOIN slikk-prod.slikkprodpublic.store_company sc
+      ON sc.id = pp.company_id
+    JOIN slikk-prod.slikkprodpublic.store_store ss
+      ON ss.id = oo.store_id
+    WHERE
+      oo.delivery_type != 'EXCHANGE'
+      AND oo.status NOT IN ('OPEN', 'FAILED')
+      AND date(oo.create_date + INTERVAL '330' minute)
+        < date(Current_date("Asia/Kolkata"))
+    GROUP BY 1, 2, 3, 4
+  ),
+
+  sku_days AS (
+    SELECT
+      coalesce(s.sku, i.sku) AS sku,
+      coalesce(s.company_code, i.company_code) AS company_code,
+      coalesce(s.order_date, i.create_date) AS day,
+      coalesce(i.qty, 0) AS inv_qty,
+      coalesce(s.qty_ordered, 0) AS sold_qty,
+      coalesce(s.store_code, i.store_code) AS store_code
+    FROM sales s
+    FULL OUTER JOIN sku_in_stock_days i
+      ON
+        s.sku = i.sku
+        AND lower(s.company_code) = lower(i.company_code)
+        AND s.order_date = i.create_date
+        AND s.store_code = i.store_code
+  ),
+
+  flagged AS (
+    SELECT
+      sku,
+      company_code,
+      store_code,
+      day,
+      inv_qty,
+      sold_qty,
+      CASE WHEN inv_qty > 0 OR sold_qty > 0 THEN 1 ELSE 0 END AS active_day_flag
+    FROM sku_days
+  ),
+
+  cte AS (
+    SELECT
+      sku,
+      company_code,
+      store_code,
+      sum(
+        CASE
+          WHEN day >= date_sub(current_date("Asia/Kolkata"), INTERVAL 1 day)
+            THEN sold_qty
+          ELSE 0
+          END) AS qty_1d,
+      sum(
+        CASE
+          WHEN day >= date_sub(current_date("Asia/Kolkata"), INTERVAL 1 day)
+            THEN active_day_flag
+          ELSE 0
+          END) AS active_days_1d,
+      safe_divide(
+        sum(
+          CASE
+            WHEN day >= date_sub(current_date("Asia/Kolkata"), INTERVAL 1 day)
+              THEN sold_qty
+            ELSE 0
+            END),
+        nullif(
+          sum(
+            CASE
+              WHEN day >= date_sub(current_date("Asia/Kolkata"), INTERVAL 1 day)
+                THEN active_day_flag
+              ELSE 0
+              END),
+          0)) AS instock_drr_1d,
+      sum(
+        CASE
+          WHEN day >= date_sub(current_date("Asia/Kolkata"), INTERVAL 7 day)
+            THEN sold_qty
+          ELSE 0
+          END) AS qty_7d,
+      sum(
+        CASE
+          WHEN day >= date_sub(current_date("Asia/Kolkata"), INTERVAL 7 day)
+            THEN active_day_flag
+          ELSE 0
+          END) AS active_days_7d,
+      safe_divide(
+        sum(
+          CASE
+            WHEN day >= date_sub(current_date("Asia/Kolkata"), INTERVAL 7 day)
+              THEN sold_qty
+            ELSE 0
+            END),
+        nullif(
+          sum(
+            CASE
+              WHEN day >= date_sub(current_date("Asia/Kolkata"), INTERVAL 7 day)
+                THEN active_day_flag
+              ELSE 0
+              END),
+          0)) AS instock_drr_7d,
+      sum(
+        CASE
+          WHEN day >= date_sub(current_date("Asia/Kolkata"), INTERVAL 60 day)
+            THEN sold_qty
+          ELSE 0
+          END) AS qty_60d,
+      sum(
+        CASE
+          WHEN day >= date_sub(current_date("Asia/Kolkata"), INTERVAL 60 day)
+            THEN active_day_flag
+          ELSE 0
+          END) AS active_days_60d,
+      safe_divide(
+        sum(
+          CASE
+            WHEN day >= date_sub(current_date("Asia/Kolkata"), INTERVAL 60 day)
+              THEN sold_qty
+            ELSE 0
+            END),
+        nullif(
+          sum(
+            CASE
+              WHEN day >= date_sub(current_date("Asia/Kolkata"), INTERVAL 60 day)
+                THEN active_day_flag
+              ELSE 0
+              END),
+          0)) AS instock_drr_60d,
+      sum(
+        CASE
+          WHEN day >= date_sub(current_date("Asia/Kolkata"), INTERVAL 90 day)
+            THEN sold_qty
+          ELSE 0
+          END) AS qty_90d,
+      sum(
+        CASE
+          WHEN day >= date_sub(current_date("Asia/Kolkata"), INTERVAL 90 day)
+            THEN active_day_flag
+          ELSE 0
+          END) AS active_days_90d,
+      safe_divide(
+        sum(
+          CASE
+            WHEN day >= date_sub(current_date("Asia/Kolkata"), INTERVAL 90 day)
+              THEN sold_qty
+            ELSE 0
+            END),
+        nullif(
+          sum(
+            CASE
+              WHEN day >= date_sub(current_date("Asia/Kolkata"), INTERVAL 90 day)
+                THEN active_day_flag
+              ELSE 0
+              END),
+          0)) AS instock_drr_90d,
+      sum(
+        CASE
+          WHEN day >= date_sub(current_date("Asia/Kolkata"), INTERVAL 30 day)
+            THEN sold_qty
+          ELSE 0
+          END) AS qty_30d,
+      sum(
+        CASE
+          WHEN day >= date_sub(current_date("Asia/Kolkata"), INTERVAL 30 day)
+            THEN active_day_flag
+          ELSE 0
+          END) AS active_days_30d,
+      safe_divide(
+        sum(
+          CASE
+            WHEN day >= date_sub(current_date("Asia/Kolkata"), INTERVAL 30 day)
+              THEN sold_qty
+            ELSE 0
+            END),
+        nullif(
+          sum(
+            CASE
+              WHEN
+                day >= date_sub(current_date("Asia/Kolkata"), INTERVAL 30 day)
+                THEN active_day_flag
+              ELSE 0
+              END),
+          0)) AS instock_drr_30d
+    FROM flagged
+    WHERE day >= date_sub(current_date("Asia/Kolkata"), INTERVAL 100 day)
+    GROUP BY 1, 2, 3
+  )
+
+select
+sku,
+company_code,
+coalesce(round(sum(case when store_code = 'slikk101' then instock_drr_7d else 0 end),2),0) as slikk101_instock_drr_7d,
+coalesce(round(sum(case when store_code = 'slikk103' then instock_drr_7d else 0 end),2),0) as slikk103_instock_drr_7d,
+coalesce(round(sum(case when store_code = 'slikk104' then instock_drr_7d else 0 end),2),0) as slikk104_instock_drr_7d,
+coalesce(round(sum(case when store_code = 'slikk105' then instock_drr_7d else 0 end),2),0) as slikk105_instock_drr_7d,
+coalesce(round(sum(case when store_code = 'slikk106' then instock_drr_7d else 0 end),2),0) as slikk106_instock_drr_7d,
+coalesce(round(sum(case when store_code = 'slikk101' then instock_drr_30d else 0 end),2),0) as slikk101_instock_drr_30d,
+coalesce(round(sum(case when store_code = 'slikk103' then instock_drr_30d else 0 end),2),0) as slikk103_instock_drr_30d,
+coalesce(round(sum(case when store_code = 'slikk104' then instock_drr_30d else 0 end),2),0) as slikk104_instock_drr_30d,
+coalesce(round(sum(case when store_code = 'slikk105' then instock_drr_30d else 0 end),2),0) as slikk105_instock_drr_30d,
+coalesce(round(sum(case when store_code = 'slikk106' then instock_drr_30d else 0 end),2),0) as slikk106_instock_drr_30d,
+coalesce(round(sum(case when store_code = 'slikk101' then instock_drr_60d else 0 end),2),0) as slikk101_instock_drr_60d,
+coalesce(round(sum(case when store_code = 'slikk103' then instock_drr_60d else 0 end),2),0) as slikk103_instock_drr_60d,
+coalesce(round(sum(case when store_code = 'slikk104' then instock_drr_60d else 0 end),2),0) as slikk104_instock_drr_60d,
+coalesce(round(sum(case when store_code = 'slikk105' then instock_drr_60d else 0 end),2),0) as slikk105_instock_drr_60d,
+coalesce(round(sum(case when store_code = 'slikk106' then instock_drr_60d else 0 end),2),0) as slikk106_instock_drr_60d,
+coalesce(round(sum(case when store_code = 'slikk101' then instock_drr_90d else 0 end),2),0) as slikk101_instock_drr_90d,
+coalesce(round(sum(case when store_code = 'slikk103' then instock_drr_90d else 0 end),2),0) as slikk103_instock_drr_90d,
+coalesce(round(sum(case when store_code = 'slikk104' then instock_drr_90d else 0 end),2),0) as slikk104_instock_drr_90d,
+coalesce(round(sum(case when store_code = 'slikk105' then instock_drr_90d else 0 end),2),0) as slikk105_instock_drr_90d,
+coalesce(round(sum(case when store_code = 'slikk106' then instock_drr_90d else 0 end),2),0) as slikk106_instock_drr_90d
+from
+(
+SELECT
+  sku,
+  company_code,
+  store_code,
+  -- instock_drr_1d,
+  -- instock_drr_7d,
+  CASE
+    WHEN active_days_7d <= 3 THEN (instock_drr_7d) * 0.5
+    ELSE instock_drr_7d
+    END AS instock_drr_7d,
+  CASE
+    WHEN active_days_30d <= 3 THEN (instock_drr_30d) * 0.5
+    ELSE instock_drr_30d
+    END AS instock_drr_30d,
+  CASE
+    WHEN active_days_60d <= 3 THEN (instock_drr_60d) * 0.5
+    ELSE instock_drr_60d
+    END AS instock_drr_60d,
+  CASE
+    WHEN active_days_90d <= 3 THEN (instock_drr_90d) * 0.5
+    ELSE instock_drr_90d
+    END AS instock_drr_90d
+FROM cte
+) a
+group by all
