@@ -1,0 +1,633 @@
+WITH
+  is_split_order AS (
+    SELECT
+      oo.order_id,
+      COUNT(DISTINCT oo.invoice_id) AS invoices,
+      MAX(
+        CASE
+          WHEN oo.store_id != 1 THEN ss.code
+        END
+      ) AS split_store,
+    FROM
+      `slikk-prod.slikkprodpublic.order_order` oo
+      JOIN `slikk-prod.slikkprodpublic.store_store` ss ON oo.store_id = ss.id
+    WHERE
+      oo.status NOT IN ('OPEN', 'FAILED')
+      AND oo.delivery_type != 'EXCHANGE'
+    GROUP BY
+      1
+    HAVING
+      COUNT(DISTINCT oo.invoice_id) > 1
+  ),
+  orders AS (
+    SELECT
+      oo.invoice_id,
+      oo.order_id,
+      oo.create_date,
+      coalesce(iso.split_store, ss.code) AS code,
+      ss.name,
+      product_tags.fashion_style,
+      product_tags.subcategory,
+      product_tags.category,
+      product_tags.division,
+      product_tags.article_type,
+      oi.product_id,
+      oi.quantity,
+      pb.name AS brand,
+      pp.sku
+    FROM
+      `slikk-prod.slikkprodpublic.order_order` oo
+      JOIN `slikk-prod.slikkprodpublic.store_store` ss ON oo.store_id = ss.id
+      JOIN `slikk-prod.slikkprodpublic.order_orderitem` oi ON oi.order_id = oo.id
+      JOIN `slikk-prod.slikkprodpublic.product_product` pp ON pp.id = oi.product_id
+      JOIN `slikk-prod.slikkprodpublic.product_brand` pb ON pb.id = pp.brand_id
+      JOIN slikk-prod.slikksilver.product_tags ON product_tags.product_id = oi.product_id
+      LEFT JOIN is_split_order iso ON iso.order_id = oo.order_id
+    WHERE
+      oo.status NOT IN ('OPEN', 'FAILED')
+      AND oo.delivery_type <> 'EXCHANGE'
+      AND DATE(oo.create_date + INTERVAL '330' minute) < CURRENT_DATE("Asia/Kolkata")
+  ),
+  inventory_agg AS (
+    SELECT
+      pi.product_id,
+      pp.sku,
+      sc.code AS company_code,
+      pt.Brand,
+      pt.fashion_style,
+      pt.category,
+      pt.division,
+      pt.article_type,
+      pt.subcategory,
+      pt.gender,
+      pp.size,
+      pt.product_type,
+      pp.variant_id AS style_code,
+      SUM(
+        CASE
+          WHEN ss.code = 'slikk102' THEN pi.quantity
+        END
+      ) AS current_quantity_in_slikk102,
+      SUM(
+        CASE
+          WHEN ss.code = 'slikk103' THEN pi.quantity
+        END
+      ) AS current_quantity_in_slikk103,
+      SUM(
+        CASE
+          WHEN ss.code = 'slikk104' THEN pi.quantity
+        END
+      ) AS current_quantity_in_slikk104,
+      SUM(
+        CASE
+          WHEN ss.code = 'slikk101' THEN pi.quantity
+        END
+      ) AS current_quantity_in_slikk101,
+      SUM(
+        CASE
+          WHEN ss.code = 'slikk105' THEN pi.quantity
+        END
+      ) AS current_quantity_in_slikk105,
+      SUM(
+        CASE
+          WHEN ss.code = 'slikk106' THEN pi.quantity
+        END
+      ) AS current_quantity_in_slikk106,
+      SUM(
+        CASE
+          WHEN ss.code = 'DHLBLR101' THEN pi.quantity
+        END
+      ) AS current_quantity_in_dhl,
+    FROM
+      `slikk-prod.slikkprodpublic.product_inventory` pi
+      JOIN `slikk-prod.slikkprodpublic.store_store` ss ON pi.store_id = ss.id
+      JOIN `slikk-prod.slikkprodpublic.product_product` pp ON pp.id = pi.product_id
+      JOIN slikk-prod.slikkprodpublic.store_company sc ON pp.company_id = sc.id
+      JOIN `slikk-prod.slikkprodpublic.product_brand` pb ON pb.id = pp.brand_id
+      JOIN slikk-prod.slikksilver.product_tags pt ON pt.product_id = pi.product_id
+    GROUP BY
+      all
+  ),
+  in_transit_summary AS (
+    WITH
+      qc_agg AS (
+        SELECT
+          gdn_inner.indent_note_id,
+          qc_inner.sku,
+          qc_inner.company_id,
+          grn_inner.store_id,
+          SUM(qc_inner.qc_passed) AS qc_passed
+        FROM
+          slikk-prod.slikkprodpublic.product_goodsqualitycheck qc_inner
+          JOIN slikk-prod.slikkprodpublic.product_goodsreceivednote grn_inner ON qc_inner.grn_id = grn_inner.id
+          JOIN slikk-prod.slikkprodpublic.product_goodsshipment s_inner ON grn_inner.shipment_id = s_inner.id
+          JOIN slikk-prod.slikkprodpublic.product_goodsdispatchnote gdn_inner ON s_inner.gdn_id = gdn_inner.id
+        GROUP BY
+          1,
+          2,
+          3,
+          4
+      )
+    SELECT
+      sku,
+      lower(company_code) AS company_code,
+      sum(
+        coalesce(
+          CASE
+            WHEN target_store = 'slikk101' THEN (in_transit_yet_to_pick) + (in_transit_yet_to_inward)
+          END,
+          0
+        )
+      ) AS in_transit_qty_in_slikk101,
+      sum(
+        coalesce(
+          CASE
+            WHEN target_store = 'slikk103' THEN (in_transit_yet_to_pick) + (in_transit_yet_to_inward)
+          END,
+          0
+        )
+      ) AS in_transit_qty_in_slikk103,
+      sum(
+        coalesce(
+          CASE
+            WHEN target_store = 'slikk104' THEN (in_transit_yet_to_pick) + (in_transit_yet_to_inward)
+          END,
+          0
+        )
+      ) AS in_transit_qty_in_slikk104,
+      sum(
+        coalesce(
+          CASE
+            WHEN target_store = 'slikk105' THEN (in_transit_yet_to_pick) + (in_transit_yet_to_inward)
+          END,
+          0
+        )
+      ) AS in_transit_qty_in_slikk105,
+      sum(
+        coalesce(
+          CASE
+            WHEN target_store = 'slikk106' THEN (in_transit_yet_to_pick) + (in_transit_yet_to_inward)
+          END,
+          0
+        )
+      ) AS in_transit_qty_in_slikk106
+    FROM
+      (
+        SELECT
+          i.sku,
+          LOWER(sc.code) AS company_code,
+          target_store.code AS target_store,
+          sum(i.synced_quantity) AS synced_quantity,
+          sum(i.quantity_accepted) AS quantity_accepted,
+          sum(COALESCE(qc.qc_passed, 0)) AS grn_qty,
+          sum(
+            CASE
+              WHEN LOWER(inote.status) = 'fulfilled' THEN 0
+              ELSE GREATEST(i.synced_quantity - i.quantity_accepted, 0)
+            END
+          ) AS in_transit_yet_to_pick,
+          sum(
+            CASE
+              WHEN DATE(inote.create_date + INTERVAL 330 MINUTE) >= DATE_SUB(CURRENT_DATE("Asia/Kolkata"), INTERVAL 1 MONTH) THEN GREATEST(
+                i.quantity_accepted - COALESCE(qc.qc_passed, 0),
+                0
+              )
+              ELSE 0
+            END
+          ) AS in_transit_yet_to_inward,
+          sum(
+            CASE
+              WHEN LOWER(inote.status) = 'fulfilled' THEN GREATEST(i.synced_quantity - i.quantity_accepted, 0)
+              ELSE 0
+            END
+          ) AS qty_in_source_not_picked,
+          sum(
+            CASE
+              WHEN DATE(inote.create_date + INTERVAL 330 MINUTE) >= DATE_SUB(CURRENT_DATE("Asia/Kolkata"), INTERVAL 1 MONTH) THEN 0
+              ELSE GREATEST(
+                i.quantity_accepted - COALESCE(qc.qc_passed, 0),
+                0
+              )
+            END
+          ) AS qty_not_found
+        FROM
+          slikk-prod.slikkprodpublic.product_intentnoteitem i
+          JOIN slikk-prod.slikkprodpublic.product_intentnote inote ON i.intent_note_id = inote.id
+          JOIN slikk-prod.slikkprodpublic.store_company sc ON i.company_id = sc.id
+          JOIN slikk-prod.slikkprodpublic.store_store source_store ON source_store.id = inote.source_store_id
+          JOIN slikk-prod.slikkprodpublic.store_store target_store ON target_store.id = inote.target_store_id
+          LEFT JOIN qc_agg qc ON qc.indent_note_id = i.intent_note_id
+          AND qc.sku = i.sku
+          AND qc.company_id = i.company_id
+          AND qc.store_id = inote.target_store_id
+        WHERE
+          LOWER(inote.status) NOT IN ('rejected', 'draft')
+        GROUP BY
+          ALL
+      ) a
+    GROUP BY
+      ALL
+    HAVING
+      sum(in_transit_yet_to_pick) + sum(in_transit_yet_to_inward) > 0
+  ),
+  inv_agg_final AS (
+    SELECT
+      i.*,
+      its.* EXCEPT (sku, company_code)
+    FROM
+      inventory_agg i
+      LEFT JOIN in_transit_summary its ON i.sku = its.sku
+      AND lower(i.company_code) = its.company_code
+  ),
+  base AS (
+    SELECT
+      inv.product_id,
+      inv.sku,
+      lower(inv.company_code) AS company_code,
+      inv.fashion_style,
+      inv.category,
+      inv.subcategory,
+      inv.article_type,
+      inv.division,
+      inv.Brand,
+      inv.gender,
+      inv.size,
+      inv.product_type,
+      inv.style_code,
+      COALESCE(MAX(inv.current_quantity_in_slikk102), 0) AS current_quantity_in_slikk102,
+      COALESCE(MAX(inv.current_quantity_in_slikk103), 0) AS current_quantity_in_slikk103,
+      COALESCE(MAX(inv.in_transit_qty_in_slikk103), 0) AS in_transit_qty_in_slikk103,
+      COALESCE(MAX(inv.current_quantity_in_slikk104), 0) AS current_quantity_in_slikk104,
+      COALESCE(MAX(inv.in_transit_qty_in_slikk104), 0) AS in_transit_qty_in_slikk104,
+      COALESCE(MAX(inv.current_quantity_in_slikk101), 0) AS current_quantity_in_slikk101,
+      COALESCE(MAX(inv.in_transit_qty_in_slikk101), 0) AS in_transit_qty_in_slikk101,
+      COALESCE(MAX(inv.current_quantity_in_slikk105), 0) AS current_quantity_in_slikk105,
+      COALESCE(MAX(inv.in_transit_qty_in_slikk105), 0) AS in_transit_qty_in_slikk105,
+      COALESCE(MAX(inv.current_quantity_in_slikk106), 0) AS current_quantity_in_slikk106,
+      COALESCE(MAX(inv.in_transit_qty_in_slikk106), 0) AS in_transit_qty_in_slikk106,
+      COALESCE(MAX(inv.current_quantity_in_dhl), 0) AS current_quantity_in_dhl,
+      SUM(
+        CASE
+          WHEN DATE(o.create_date + INTERVAL 330 MINUTE) >= DATE_SUB(CURRENT_DATE("Asia/Kolkata"), INTERVAL 30 DAY)
+          AND o.code = 'slikk101' THEN o.quantity
+        END
+      ) AS slikk101_last_30_qty,
+      COUNT(
+        DISTINCT CASE
+          WHEN DATE(o.create_date + INTERVAL 330 MINUTE) >= DATE_SUB(CURRENT_DATE("Asia/Kolkata"), INTERVAL 30 DAY)
+          AND o.code = 'slikk101' THEN DATE(o.create_date + INTERVAL 330 MINUTE)
+        END
+      ) AS slikk101_last_30_days,
+      SUM(
+        CASE
+          WHEN DATE(o.create_date + INTERVAL 330 MINUTE) >= DATE_SUB(CURRENT_DATE("Asia/Kolkata"), INTERVAL 7 DAY)
+          AND o.code = 'slikk101' THEN o.quantity
+        END
+      ) AS slikk101_last_7_qty,
+      COUNT(
+        DISTINCT CASE
+          WHEN DATE(o.create_date + INTERVAL 330 MINUTE) >= DATE_SUB(CURRENT_DATE("Asia/Kolkata"), INTERVAL 7 DAY)
+          AND o.code = 'slikk101' THEN DATE(o.create_date + INTERVAL 330 MINUTE)
+        END
+      ) AS slikk101_last_7_days,
+      SUM(
+        CASE
+          WHEN DATE(o.create_date + INTERVAL 330 MINUTE) >= DATE_SUB(CURRENT_DATE("Asia/Kolkata"), INTERVAL 3 DAY)
+          AND o.code = 'slikk101' THEN o.quantity
+        END
+      ) AS slikk101_last_3_qty,
+      COUNT(
+        DISTINCT CASE
+          WHEN DATE(o.create_date + INTERVAL 330 MINUTE) >= DATE_SUB(CURRENT_DATE("Asia/Kolkata"), INTERVAL 3 DAY)
+          AND o.code = 'slikk101' THEN DATE(o.create_date + INTERVAL 330 MINUTE)
+        END
+      ) AS slikk101_last_3_days,
+      SUM(
+        CASE
+          WHEN DATE(o.create_date + INTERVAL 330 MINUTE) >= DATE_SUB(CURRENT_DATE("Asia/Kolkata"), INTERVAL 30 DAY)
+          AND o.code = 'slikk103' THEN o.quantity
+        END
+      ) AS slikk103_last_30_qty,
+      COUNT(
+        DISTINCT CASE
+          WHEN DATE(o.create_date + INTERVAL 330 MINUTE) >= DATE_SUB(CURRENT_DATE("Asia/Kolkata"), INTERVAL 30 DAY)
+          AND o.code = 'slikk103' THEN DATE(o.create_date + INTERVAL 330 MINUTE)
+        END
+      ) AS slikk103_last_30_days,
+      SUM(
+        CASE
+          WHEN DATE(o.create_date + INTERVAL 330 MINUTE) >= DATE_SUB(CURRENT_DATE("Asia/Kolkata"), INTERVAL 7 DAY)
+          AND o.code = 'slikk103' THEN o.quantity
+        END
+      ) AS slikk103_last_7_qty,
+      COUNT(
+        DISTINCT CASE
+          WHEN DATE(o.create_date + INTERVAL 330 MINUTE) >= DATE_SUB(CURRENT_DATE("Asia/Kolkata"), INTERVAL 7 DAY)
+          AND o.code = 'slikk103' THEN DATE(o.create_date + INTERVAL 330 MINUTE)
+        END
+      ) AS slikk103_last_7_days,
+      SUM(
+        CASE
+          WHEN DATE(o.create_date + INTERVAL 330 MINUTE) >= DATE_SUB(CURRENT_DATE("Asia/Kolkata"), INTERVAL 3 DAY)
+          AND o.code = 'slikk103' THEN o.quantity
+        END
+      ) AS slikk103_last_3_qty,
+      COUNT(
+        DISTINCT CASE
+          WHEN DATE(o.create_date + INTERVAL 330 MINUTE) >= DATE_SUB(CURRENT_DATE("Asia/Kolkata"), INTERVAL 3 DAY)
+          AND o.code = 'slikk103' THEN DATE(o.create_date + INTERVAL 330 MINUTE)
+        END
+      ) AS slikk103_last_3_days,
+      SUM(
+        CASE
+          WHEN DATE(o.create_date + INTERVAL 330 MINUTE) >= DATE_SUB(CURRENT_DATE("Asia/Kolkata"), INTERVAL 30 DAY)
+          AND o.code = 'slikk104' THEN o.quantity
+        END
+      ) AS slikk104_last_30_qty,
+      COUNT(
+        DISTINCT CASE
+          WHEN DATE(o.create_date + INTERVAL 330 MINUTE) >= DATE_SUB(CURRENT_DATE("Asia/Kolkata"), INTERVAL 30 DAY)
+          AND o.code = 'slikk104' THEN DATE(o.create_date + INTERVAL 330 MINUTE)
+        END
+      ) AS slikk104_last_30_days,
+      SUM(
+        CASE
+          WHEN DATE(o.create_date + INTERVAL 330 MINUTE) >= DATE_SUB(CURRENT_DATE("Asia/Kolkata"), INTERVAL 7 DAY)
+          AND o.code = 'slikk104' THEN o.quantity
+        END
+      ) AS slikk104_last_7_qty,
+      COUNT(
+        DISTINCT CASE
+          WHEN DATE(o.create_date + INTERVAL 330 MINUTE) >= DATE_SUB(CURRENT_DATE("Asia/Kolkata"), INTERVAL 7 DAY)
+          AND o.code = 'slikk104' THEN DATE(o.create_date + INTERVAL 330 MINUTE)
+        END
+      ) AS slikk104_last_7_days,
+      SUM(
+        CASE
+          WHEN DATE(o.create_date + INTERVAL 330 MINUTE) >= DATE_SUB(CURRENT_DATE("Asia/Kolkata"), INTERVAL 3 DAY)
+          AND o.code = 'slikk104' THEN o.quantity
+        END
+      ) AS slikk104_last_3_qty,
+      COUNT(
+        DISTINCT CASE
+          WHEN DATE(o.create_date + INTERVAL 330 MINUTE) >= DATE_SUB(CURRENT_DATE("Asia/Kolkata"), INTERVAL 3 DAY)
+          AND o.code = 'slikk104' THEN DATE(o.create_date + INTERVAL 330 MINUTE)
+        END
+      ) AS slikk104_last_3_days,
+      SUM(
+        CASE
+          WHEN DATE(o.create_date + INTERVAL 330 MINUTE) >= DATE_SUB(CURRENT_DATE("Asia/Kolkata"), INTERVAL 30 DAY)
+          AND o.code = 'slikk105' THEN o.quantity
+        END
+      ) AS slikk105_last_30_qty,
+      COUNT(
+        DISTINCT CASE
+          WHEN DATE(o.create_date + INTERVAL 330 MINUTE) >= DATE_SUB(CURRENT_DATE("Asia/Kolkata"), INTERVAL 30 DAY)
+          AND o.code = 'slikk105' THEN DATE(o.create_date + INTERVAL 330 MINUTE)
+        END
+      ) AS slikk105_last_30_days,
+      SUM(
+        CASE
+          WHEN DATE(o.create_date + INTERVAL 330 MINUTE) >= DATE_SUB(CURRENT_DATE("Asia/Kolkata"), INTERVAL 7 DAY)
+          AND o.code = 'slikk105' THEN o.quantity
+        END
+      ) AS slikk105_last_7_qty,
+      COUNT(
+        DISTINCT CASE
+          WHEN DATE(o.create_date + INTERVAL 330 MINUTE) >= DATE_SUB(CURRENT_DATE("Asia/Kolkata"), INTERVAL 7 DAY)
+          AND o.code = 'slikk105' THEN DATE(o.create_date + INTERVAL 330 MINUTE)
+        END
+      ) AS slikk105_last_7_days,
+      SUM(
+        CASE
+          WHEN DATE(o.create_date + INTERVAL 330 MINUTE) >= DATE_SUB(CURRENT_DATE("Asia/Kolkata"), INTERVAL 3 DAY)
+          AND o.code = 'slikk105' THEN o.quantity
+        END
+      ) AS slikk105_last_3_qty,
+      COUNT(
+        DISTINCT CASE
+          WHEN DATE(o.create_date + INTERVAL 330 MINUTE) >= DATE_SUB(CURRENT_DATE("Asia/Kolkata"), INTERVAL 3 DAY)
+          AND o.code = 'slikk105' THEN DATE(o.create_date + INTERVAL 330 MINUTE)
+        END
+      ) AS slikk105_last_3_days,
+      SUM(
+        CASE
+          WHEN DATE(o.create_date + INTERVAL 330 MINUTE) >= DATE_SUB(CURRENT_DATE("Asia/Kolkata"), INTERVAL 30 DAY)
+          AND o.code = 'slikk106' THEN o.quantity
+        END
+      ) AS slikk106_last_30_qty,
+      COUNT(
+        DISTINCT CASE
+          WHEN DATE(o.create_date + INTERVAL 330 MINUTE) >= DATE_SUB(CURRENT_DATE("Asia/Kolkata"), INTERVAL 30 DAY)
+          AND o.code = 'slikk106' THEN DATE(o.create_date + INTERVAL 330 MINUTE)
+        END
+      ) AS slikk106_last_30_days,
+      SUM(
+        CASE
+          WHEN DATE(o.create_date + INTERVAL 330 MINUTE) >= DATE_SUB(CURRENT_DATE("Asia/Kolkata"), INTERVAL 7 DAY)
+          AND o.code = 'slikk106' THEN o.quantity
+        END
+      ) AS slikk106_last_7_qty,
+      COUNT(
+        DISTINCT CASE
+          WHEN DATE(o.create_date + INTERVAL 330 MINUTE) >= DATE_SUB(CURRENT_DATE("Asia/Kolkata"), INTERVAL 7 DAY)
+          AND o.code = 'slikk106' THEN DATE(o.create_date + INTERVAL 330 MINUTE)
+        END
+      ) AS slikk106_last_7_days,
+      SUM(
+        CASE
+          WHEN DATE(o.create_date + INTERVAL 330 MINUTE) >= DATE_SUB(CURRENT_DATE("Asia/Kolkata"), INTERVAL 3 DAY)
+          AND o.code = 'slikk106' THEN o.quantity
+        END
+      ) AS slikk106_last_3_qty,
+      COUNT(
+        DISTINCT CASE
+          WHEN DATE(o.create_date + INTERVAL 330 MINUTE) >= DATE_SUB(CURRENT_DATE("Asia/Kolkata"), INTERVAL 3 DAY)
+          AND o.code = 'slikk106' THEN DATE(o.create_date + INTERVAL 330 MINUTE)
+        END
+      ) AS slikk106_last_3_days
+    FROM
+      inv_agg_final inv
+      LEFT JOIN orders o ON inv.product_id = o.product_id
+    GROUP BY
+      all
+  ),
+  calc AS (
+    SELECT
+      b.* EXCEPT (company_code),
+      b.company_code,
+      COALESCE(d.slikk101_instock_drr_7d, 0) AS slikk101_instock_drr_7d,
+      COALESCE(d.slikk101_instock_drr_30d, 0) AS slikk101_instock_drr_30d,
+      COALESCE(d.slikk101_instock_drr_60d, 0) AS slikk101_instock_drr_60d,
+      COALESCE(d.slikk103_instock_drr_7d, 0) AS slikk103_instock_drr_7d,
+      COALESCE(d.slikk103_instock_drr_30d, 0) AS slikk103_instock_drr_30d,
+      COALESCE(d.slikk103_instock_drr_60d, 0) AS slikk103_instock_drr_60d,
+      COALESCE(d.slikk104_instock_drr_7d, 0) AS slikk104_instock_drr_7d,
+      COALESCE(d.slikk104_instock_drr_30d, 0) AS slikk104_instock_drr_30d,
+      COALESCE(d.slikk104_instock_drr_60d, 0) AS slikk104_instock_drr_60d,
+      COALESCE(d.slikk105_instock_drr_7d, 0) AS slikk105_instock_drr_7d,
+      COALESCE(d.slikk105_instock_drr_30d, 0) AS slikk105_instock_drr_30d,
+      COALESCE(d.slikk105_instock_drr_60d, 0) AS slikk105_instock_drr_60d,
+      COALESCE(d.slikk106_instock_drr_7d, 0) AS slikk106_instock_drr_7d,
+      COALESCE(d.slikk106_instock_drr_30d, 0) AS slikk106_instock_drr_30d,
+      COALESCE(d.slikk106_instock_drr_60d, 0) AS slikk106_instock_drr_60d,
+      (
+        COALESCE(d.slikk101_instock_drr_7d, 0) + COALESCE(d.slikk101_instock_drr_30d, 0)
+      ) / 2.0 AS slikk101_avg_drr,
+      (
+        COALESCE(d.slikk103_instock_drr_7d, 0) + COALESCE(d.slikk103_instock_drr_30d, 0)
+      ) / 2.0 AS slikk103_avg_drr,
+      (
+        COALESCE(d.slikk104_instock_drr_7d, 0) + COALESCE(d.slikk104_instock_drr_30d, 0)
+      ) / 2.0 AS slikk104_avg_drr,
+      (
+        COALESCE(d.slikk105_instock_drr_7d, 0) + COALESCE(d.slikk105_instock_drr_30d, 0)
+      ) / 2.0 AS slikk105_avg_drr,
+      (
+        COALESCE(d.slikk106_instock_drr_7d, 0) + COALESCE(d.slikk106_instock_drr_30d, 0)
+      ) / 2.0 AS slikk106_avg_drr,
+      (
+        COALESCE(SAFE_DIVIDE(slikk101_last_3_qty, 3), 0) + COALESCE(SAFE_DIVIDE(slikk101_last_7_qty, 7), 0) + COALESCE(SAFE_DIVIDE(slikk101_last_30_qty, 30), 0)
+      ) / 3.0 AS slikk101_avg_drr_normal,
+      (
+        COALESCE(SAFE_DIVIDE(slikk103_last_3_qty, 3), 0) + COALESCE(SAFE_DIVIDE(slikk103_last_7_qty, 7), 0) + COALESCE(SAFE_DIVIDE(slikk103_last_30_qty, 30), 0)
+      ) / 3.0 AS slikk103_avg_drr_normal,
+      (
+        COALESCE(SAFE_DIVIDE(slikk104_last_3_qty, 3), 0) + COALESCE(SAFE_DIVIDE(slikk104_last_7_qty, 7), 0) + COALESCE(SAFE_DIVIDE(slikk104_last_30_qty, 30), 0)
+      ) / 3.0 AS slikk104_avg_drr_normal,
+      (
+        COALESCE(SAFE_DIVIDE(slikk105_last_3_qty, 3), 0) + COALESCE(SAFE_DIVIDE(slikk105_last_7_qty, 7), 0) + COALESCE(SAFE_DIVIDE(slikk105_last_30_qty, 30), 0)
+      ) / 3.0 AS slikk105_avg_drr_normal,
+      (
+        COALESCE(SAFE_DIVIDE(slikk106_last_3_qty, 3), 0) + COALESCE(SAFE_DIVIDE(slikk106_last_7_qty, 7), 0) + COALESCE(SAFE_DIVIDE(slikk106_last_30_qty, 30), 0)
+      ) / 3.0 AS slikk106_avg_drr_normal,
+    FROM
+      base b
+      LEFT JOIN `slikk-prod.slikkanalytics.instock_drr_306090days` d ON b.sku = d.sku
+      AND LOWER(b.company_code) = LOWER(d.company_code)
+  ),
+  req AS (
+    SELECT
+      c.*,
+      COALESCE(SAFE_DIVIDE(slikk101_last_30_qty, 30), 0) AS slikk101_last_30_drr,
+      COALESCE(SAFE_DIVIDE(slikk101_last_7_qty, 7), 0) AS slikk101_last_7_drr,
+      COALESCE(SAFE_DIVIDE(slikk101_last_3_qty, 3), 0) AS slikk101_last_3_drr,
+      COALESCE(SAFE_DIVIDE(slikk103_last_30_qty, 30), 0) AS slikk103_last_30_drr,
+      COALESCE(SAFE_DIVIDE(slikk103_last_7_qty, 7), 0) AS slikk103_last_7_drr,
+      COALESCE(SAFE_DIVIDE(slikk103_last_3_qty, 3), 0) AS slikk103_last_3_drr,
+      COALESCE(SAFE_DIVIDE(slikk104_last_30_qty, 30), 0) AS slikk104_last_30_drr,
+      COALESCE(SAFE_DIVIDE(slikk104_last_7_qty, 7), 0) AS slikk104_last_7_drr,
+      COALESCE(SAFE_DIVIDE(slikk104_last_3_qty, 3), 0) AS slikk104_last_3_drr,
+      COALESCE(SAFE_DIVIDE(slikk105_last_30_qty, 30), 0) AS slikk105_last_30_drr,
+      COALESCE(SAFE_DIVIDE(slikk105_last_7_qty, 7), 0) AS slikk105_last_7_drr,
+      COALESCE(SAFE_DIVIDE(slikk105_last_3_qty, 3), 0) AS slikk105_last_3_drr,
+      COALESCE(SAFE_DIVIDE(slikk106_last_30_qty, 30), 0) AS slikk106_last_30_drr,
+      COALESCE(SAFE_DIVIDE(slikk106_last_7_qty, 7), 0) AS slikk106_last_7_drr,
+      COALESCE(SAFE_DIVIDE(slikk106_last_3_qty, 3), 0) AS slikk106_last_3_drr,
+      COALESCE(in_transit_qty_in_slikk101, 0) AS in_transit_101,
+      COALESCE(in_transit_qty_in_slikk103, 0) AS in_transit_103,
+      COALESCE(in_transit_qty_in_slikk104, 0) AS in_transit_104,
+      (
+        current_quantity_in_slikk101 + COALESCE(in_transit_qty_in_slikk101, 0)
+      ) AS effective_inv_101,
+      (
+        current_quantity_in_slikk103 + COALESCE(in_transit_qty_in_slikk103, 0)
+      ) AS effective_inv_103,
+      (
+        current_quantity_in_slikk104 + COALESCE(in_transit_qty_in_slikk104, 0)
+      ) AS effective_inv_104,
+      (
+        current_quantity_in_slikk105 + COALESCE(in_transit_qty_in_slikk105, 0)
+      ) AS effective_inv_105,
+      (
+        current_quantity_in_slikk106 + COALESCE(in_transit_qty_in_slikk106, 0)
+      ) AS effective_inv_106,
+      CEIL(slikk101_avg_drr * 1) AS slikk101_required_stock,
+      CEIL(slikk103_avg_drr * 1) AS slikk103_required_stock,
+      CEIL(slikk104_avg_drr * 1) AS slikk104_required_stock,
+      GREATEST(
+        CEIL(slikk101_avg_drr * 1) - (
+          current_quantity_in_slikk101 + COALESCE(in_transit_qty_in_slikk101, 0)
+        ),
+        0
+      ) AS slikk101_to_move,
+      GREATEST(
+        CEIL(slikk103_avg_drr * 1) - (
+          current_quantity_in_slikk103 + COALESCE(in_transit_qty_in_slikk103, 0)
+        ),
+        0
+      ) AS slikk103_to_move,
+      GREATEST(
+        CEIL(slikk103_avg_drr * 1) - (
+          current_quantity_in_slikk104 + COALESCE(in_transit_qty_in_slikk104, 0)
+        ),
+        0
+      ) AS slikk104_to_move,
+    FROM
+      calc c
+  ),
+  sku_last_inward_date AS (
+    SELECT
+      sku,
+      lower(sc.code) AS company_code,
+      COALESCE(
+        MAX(
+          CASE
+            WHEN qc_passed > 0
+            AND grn.store_id = 12 THEN qc.create_date + INTERVAL '330' MINUTE
+          END
+        ),
+        MAX(
+          CASE
+            WHEN qc_passed > 0
+            AND grn.store_id = 3 THEN qc.create_date + INTERVAL '330' MINUTE
+          END
+        ),
+        MAX(
+          CASE
+            WHEN qc_passed > 0
+            AND grn.store_id = 1 THEN qc.create_date + INTERVAL '330' MINUTE
+          END
+        )
+      ) AS last_inward_date
+    FROM
+      slikk-prod.slikkprodpublic.product_goodsqualitycheck qc
+      LEFT JOIN slikk-prod.slikkprodpublic.product_goodsreceivednote grn ON qc.grn_id = grn.id
+      LEFT JOIN slikk-prod.slikkprodpublic.store_company sc ON sc.id = qc.company_id
+    GROUP BY
+      1,
+      2
+  ),
+final as(
+SELECT
+   brand,
+   req.style_code as style_code,
+    SUM(
+        COALESCE(current_quantity_in_slikk102, 0)
+        + COALESCE(current_quantity_in_dhl, 0)
+        + COALESCE(effective_inv_101, 0)
+        + COALESCE(effective_inv_104, 0)
+        + COALESCE(effective_inv_103, 0)
+        + COALESCE(effective_inv_105, 0)
+        + COALESCE(effective_inv_106, 0)
+    ) AS total_current_inventory,
+  CASE
+    WHEN SUM(
+        COALESCE(current_quantity_in_slikk102, 0)
+        + COALESCE(current_quantity_in_dhl, 0)
+        + COALESCE(effective_inv_101, 0)
+        + COALESCE(effective_inv_104, 0)
+        + COALESCE(effective_inv_103, 0)
+        + COALESCE(effective_inv_105, 0)
+        + COALESCE(effective_inv_106, 0)
+    )= 0
+    THEN 'OOS'
+    ELSE 'LIVE'
+END AS inventory_status
+FROM
+  req
+  LEFT JOIN sku_last_inward_date slid ON req.sku = slid.sku
+  AND req.company_code = slid.company_code
+  group by 1,2)
+select brand,count(style_code) as active_style_count,sum(total_current_inventory) as SOH from final where inventory_status='LIVE'
+group by 1;
