@@ -1,0 +1,232 @@
+WITH sku_in_stock_days AS (
+
+  SELECT
+    sku,
+    company_code,
+    create_date,
+    store_code,
+    SUM(quantity) AS qty
+
+  FROM `slikk-prod.slikkprodpublic.product_inventorysnapshot`
+
+  WHERE
+    create_date >= DATE_SUB(
+      CURRENT_DATE('Asia/Kolkata'),
+      INTERVAL 90 DAY
+    )
+    AND create_date < CURRENT_DATE('Asia/Kolkata')
+
+  GROUP BY
+    1, 2, 3, 4
+),
+
+sales AS (
+
+  SELECT
+    pp.sku AS sku,
+    sc.code AS company_code,
+    DATE(
+      oo.create_date + INTERVAL '330' MINUTE
+    ) AS order_date,
+    LOWER(ss.code) AS store_code,
+    SUM(oi.quantity) AS qty_ordered
+
+  FROM `slikk-prod.slikkprodpublic.order_order` oo
+
+  JOIN `slikk-prod.slikkprodpublic.order_orderitem` oi
+    ON oo.id = oi.order_id
+
+  JOIN `slikk-prod.slikkprodpublic.product_product` pp
+    ON pp.id = oi.product_id
+
+  JOIN `slikk-prod.slikkprodpublic.store_company` sc
+    ON sc.id = pp.company_id
+
+  JOIN `slikk-prod.slikkprodpublic.store_store` ss
+    ON ss.id = oo.store_id
+
+  WHERE
+    oo.delivery_type != 'EXCHANGE'
+    AND oo.status NOT IN ('OPEN', 'FAILED')
+
+    AND DATE(
+      oo.create_date + INTERVAL '330' MINUTE
+    ) >= DATE_SUB(
+      CURRENT_DATE('Asia/Kolkata'),
+      INTERVAL 90 DAY
+    )
+
+    AND DATE(
+      oo.create_date + INTERVAL '330' MINUTE
+    ) < CURRENT_DATE('Asia/Kolkata')
+
+  GROUP BY
+    1, 2, 3, 4
+),
+
+/* ============================================================
+   SKU + STORE + DAY
+   ============================================================ */
+
+sku_store_days AS (
+
+  SELECT
+    COALESCE(s.sku, i.sku) AS sku,
+
+    COALESCE(
+      s.company_code,
+      i.company_code
+    ) AS company_code,
+
+    COALESCE(
+      s.order_date,
+      i.create_date
+    ) AS day,
+
+    COALESCE(i.qty, 0) AS inv_qty,
+
+    COALESCE(s.qty_ordered, 0) AS sold_qty,
+
+    COALESCE(
+      s.store_code,
+      i.store_code
+    ) AS store_code
+
+  FROM sales s
+
+  FULL OUTER JOIN sku_in_stock_days i
+    ON s.sku = i.sku
+    AND LOWER(s.company_code) = LOWER(i.company_code)
+    AND s.order_date = i.create_date
+    AND s.store_code = i.store_code
+),
+
+/* ============================================================
+   STORE-DAY ACTIVE FLAG
+
+   A day is active when:
+   Inventory > 0 OR Sales > 0
+   ============================================================ */
+
+store_day_flagged AS (
+
+  SELECT
+    sku,
+    company_code,
+    store_code,
+    day,
+    inv_qty,
+    sold_qty,
+
+    CASE
+      WHEN inv_qty > 0
+        OR sold_qty > 0
+      THEN 1
+      ELSE 0
+    END AS active_day_flag
+
+  FROM sku_store_days
+),
+
+/* ============================================================
+   SKU + DAY
+
+   IMPORTANT:
+   Multiple stores on the same date count as ONLY ONE
+   active day for the SKU.
+   ============================================================ */
+
+sku_day AS (
+
+  SELECT
+    sku,
+
+    day,
+
+    SUM(sold_qty) AS sold_qty,
+
+    MAX(active_day_flag) AS active_day_flag
+
+  FROM store_day_flagged
+
+  GROUP BY
+    sku,
+    day
+),
+
+/* ============================================================
+   OVERALL SKU 90-DAY DATA
+   ============================================================ */
+
+sku_90d AS (
+
+  SELECT
+    sku,
+
+    SUM(sold_qty) AS qty_90d,
+
+    SUM(active_day_flag) AS active_days_90d
+
+  FROM sku_day
+
+  WHERE
+    day >= DATE_SUB(
+      CURRENT_DATE('Asia/Kolkata'),
+      INTERVAL 90 DAY
+    )
+
+  GROUP BY
+    sku
+),
+
+/* ============================================================
+   EXISTING ADJUSTMENT
+
+   If active days <= 3:
+   DRR is reduced by 50%
+   ============================================================ */
+
+final AS (
+
+  SELECT
+    sku,
+
+    qty_90d,
+
+    active_days_90d,
+
+    CASE
+
+      WHEN active_days_90d <= 3
+      THEN
+        SAFE_DIVIDE(
+          qty_90d,
+          active_days_90d
+        ) * 0.5
+
+      ELSE
+        SAFE_DIVIDE(
+          qty_90d,
+          active_days_90d
+        )
+
+    END AS overall_instock_drr_90d
+
+  FROM sku_90d
+)
+
+SELECT
+  sku,
+
+  qty_90d,
+
+  active_days_90d,
+
+  ROUND(
+    overall_instock_drr_90d,
+    2
+  ) AS overall_instock_drr_90d
+
+FROM final
+
+ORDER BY sku;
