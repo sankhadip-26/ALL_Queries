@@ -141,6 +141,7 @@ final AS (
               OR LOWER(TRIM(subcategory)) IN (
                     'hair accessories'
                  )
+              OR LOWER(TRIM(brand)) in ('ideaz')
             THEN 'JEWELLERY'
 
             WHEN LOWER(TRIM(subcategory)) IN (
@@ -174,6 +175,7 @@ final AS (
             THEN 'HOME'
 
             WHEN LOWER(TRIM(fashion_style)) = 'ethnic'
+            OR LOWER(TRIM(brand)) in ('fiorra','satrani','skylee')
             THEN 'ETHNIC'
 
             WHEN LOWER(TRIM(fashion_style)) = 'western'
