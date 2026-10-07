@@ -1,0 +1,212 @@
+WITH orders_in_range AS (
+    SELECT
+        oo.id,
+        oo.status,
+        COALESCE(
+            oo.log::text ~ '"status"\s*:\s*"PACKED"',
+            FALSE
+        ) AS log_packed
+    FROM order_order oo
+    WHERE oo.status NOT IN ('OPEN', 'FAILED')
+      AND oo.delivery_type <> 'EXCHANGE'
+      AND oo.create_date >= (
+          TIMESTAMP '2026-09-01 00:00:00'
+          AT TIME ZONE 'Asia/Kolkata'
+      )
+      AND oo.create_date < (
+          TIMESTAMP '2026-10-01 00:00:00'
+          AT TIME ZONE 'Asia/Kolkata'
+      )
+),
+
+product_tags AS (
+    SELECT
+        ti.object_id AS product_id,
+        STRING_AGG(
+            DISTINCT SPLIT_PART(tag.name, '_', 2),
+            '/' ORDER BY SPLIT_PART(tag.name, '_', 2)
+        ) AS fashion_style
+    FROM taggit_taggeditem ti
+    JOIN taggit_tag tag
+        ON tag.id = ti.tag_id
+    WHERE UPPER(tag.name) LIKE 'FASHIONSTYLE_%'
+    GROUP BY ti.object_id
+),
+
+returns_agg AS (
+    SELECT
+        order_item_id,
+        SUM(quantity) AS return_quantity
+    FROM (
+        SELECT
+            roi.order_item_id,
+
+            CASE
+                WHEN ro.status NOT IN (
+                    'OPEN',
+                    'ACCEPTED',
+                    'CANCELLED',
+                    'DELIVERY_CANCELLED',
+                    'PICKUP_CANCELLED',
+                    'RETURN_CANCELLED',
+                    'RETURN_REJECTED',
+                    'ATTEMPT_FAILED'
+                )
+                AND oo.status IN (
+                    'COMPLETED',
+                    'PACKED',
+                    'SHIPPED',
+                    'OUT_FOR_DELIVERY',
+                    'ACCEPTED'
+                )
+                THEN roi.quantity
+            END AS quantity,
+
+            ROW_NUMBER() OVER (
+                PARTITION BY
+                    roi.order_item_id,
+                    CASE
+                        WHEN oo.status = 'CANCELLED'
+                            THEN 'FIXED'
+                        ELSE ro.id::text
+                    END
+                ORDER BY ro.create_date ASC
+            ) AS rn
+
+        FROM order_returnorderitem roi
+
+        JOIN order_returnorder ro
+            ON roi.return_order_id = ro.id
+
+        JOIN order_orderitem oi
+            ON oi.id = roi.order_item_id
+
+        JOIN orders_in_range oo
+            ON oo.id = oi.order_id
+
+        WHERE LOWER(ro.return_type) NOT LIKE '%exchange%'
+    ) x
+
+    WHERE rn = 1
+
+    GROUP BY order_item_id
+),
+
+base AS (
+    SELECT
+        pt.fashion_style,
+        COALESCE(pb.name, 'NA') AS brand,
+        pp.sku,
+
+        oi.quantity,
+        oi.sp::numeric AS sp,
+        oi.brand_offer_sp::numeric AS brand_offer_sp,
+
+        CASE
+            WHEN oo.status NOT IN (
+                'CANCELLED',
+                'DECLINED',
+                'RTO_CANCELLED',
+                'RTO_DELIVERED',
+                'RTO_INITIATED'
+            )
+            THEN COALESCE(oi.fulfilled_quantity, 0)
+            ELSE 0
+        END AS fulfilled_quantity,
+
+        CASE
+            WHEN oo.status <> 'CANCELLED'
+                THEN oi.quantity - oi.fulfilled_quantity
+
+            WHEN oo.status = 'CANCELLED'
+                 AND oo.log_packed
+                THEN oi.quantity - oi.fulfilled_quantity
+
+            ELSE 0
+        END AS declined_qty,
+
+        CASE
+            WHEN oo.status IN (
+                'CANCELLED',
+                'RTO_DELIVERED',
+                'RTO_INITIATED'
+            )
+            THEN
+                CASE
+                    WHEN oo.log_packed
+                        THEN oi.fulfilled_quantity
+                    ELSE oi.quantity
+                END
+            ELSE 0
+        END AS cancelled_qty,
+
+        COALESCE(ra.return_quantity, 0) AS return_quantity
+
+    FROM orders_in_range oo
+
+    JOIN order_orderitem oi
+        ON oo.id = oi.order_id
+
+    JOIN product_product pp
+        ON pp.id = oi.product_id
+
+    JOIN product_brand pb
+        ON pb.id = pp.brand_id
+
+    JOIN product_tags pt
+        ON pt.product_id = pp.id
+
+    LEFT JOIN returns_agg ra
+        ON ra.order_item_id = oi.id
+),
+
+final AS (
+    SELECT
+        fashion_style,
+        brand,
+        sku,
+
+        GREATEST(
+            fulfilled_quantity - return_quantity,
+            0
+        ) AS net_qty_sold,
+
+        sp,
+        brand_offer_sp,
+        quantity,
+        declined_qty,
+        cancelled_qty,
+        return_quantity
+
+    FROM base
+)
+
+SELECT
+    fashion_style,
+    brand,
+    sku,
+
+    SUM(net_qty_sold) AS "NET_QTY",
+
+    SUM(
+        sp * quantity
+        - sp * declined_qty
+        - sp * cancelled_qty
+        - sp * return_quantity
+    ) AS "NMV_BEFORE_DISCOUNT",
+
+    SUM(
+        net_qty_sold * brand_offer_sp
+    ) AS "BRAND_OFFER_SP"
+
+FROM final
+
+GROUP BY
+    fashion_style,
+    brand,
+    sku
+
+ORDER BY
+    fashion_style,
+    brand,
+    sku;
