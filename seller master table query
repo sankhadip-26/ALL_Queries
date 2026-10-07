@@ -1,0 +1,147 @@
+WITH
+  product_tags_raw AS (
+    SELECT
+      ti.object_id AS product_id,
+      tag.name AS tag_name
+    FROM
+      taggit_taggeditem AS ti
+      JOIN taggit_tag AS tag ON tag.id = ti.tag_id
+  ),
+  product_tags AS (
+    SELECT
+      product_id,
+      STRING_AGG(
+        DISTINCT split_part(tag_name, '_', 2),
+        '/'
+        ORDER BY
+          split_part(tag_name, '_', 2)
+      ) FILTER (
+        WHERE
+          starts_with(UPPER(tag_name), 'BRAND_')
+      ) AS brand,
+      STRING_AGG(
+        DISTINCT split_part(tag_name, '_', 2),
+        '/'
+        ORDER BY
+          split_part(tag_name, '_', 2)
+      ) FILTER (
+        WHERE
+          starts_with(UPPER(tag_name), 'CATEGORY_')
+      ) AS category
+    FROM
+      product_tags_raw
+    GROUP BY
+      product_id
+  )
+SELECT
+  sc.code AS brand_master_company_code,
+  sc.registered_name AS vendor_business_name,
+  pt.brand AS brand_name,
+  pt.category AS category,
+  sc.poc AS vendor_contact_person_name,
+  sc.poc_email AS vendor_email_address,
+  sc.contact_number AS vendor_phone_number,
+  sc.gstin AS business_registration_number_gstin,
+  sc.gst_certificate AS business_registration_certificate_gstin,
+  sc.pan_number,
+  sc.pan_copy AS upload_pan_copy,
+  sc.tan_number,
+  sc.tan_copy AS upload_tan_copy,
+  sc.pf_declaration AS pf_esi_declaration,
+  sc.pf_declaration_doc AS pf_esi_declaration_copy,
+  sc.address AS registered_address,
+  sc.trade_mark_certificate,
+  sc.trade_mark_certificate AS trade_mark_certificate_copy,
+  sc.business_nature AS type_of_business,
+  sc.business_nature_company AS nature_of_business,
+  sc.bank_name,
+  sc.branch_name AS branch_name_and_address,
+  sc.account_number,
+  sc.ifsc AS ifsc_code,
+  sc.account_type,
+  sc.cancelled_cheque AS upload_cancelled_cheque,
+  po.business_model AS sor_or_or,
+  COALESCE(po.payment_terms, sc.approved_payment_term) AS payment_terms,
+  po.po_issued_date AS agreement_start_date,
+  po.po_expiry_date AS agreement_valid_till,
+  sc.revenue_share AS margin_revenue_share,
+  sc.handling_charges_per_order AS handling,
+  sc.warehouse_charge_per_sku AS warehouse_charges,
+  po.special_terms AS warehouse_charges_applicability,
+  po.discount_sharing_applicable AS discount_sharing,
+  po.special_terms AS discount_sharing_terms,
+  sc.is_msme AS is_vendor_registered_under_msme,
+  sc.msme_certificate AS upload_msme_certificate,
+  sc.commercial_approval_doc AS upload_commercial_approval_document,
+  sc.approved_onboarding_doc AS finalized_approved_onboarding_agreement,
+  sc.poc AS vendor_category_contact_person_name,
+  sc.poc_email AS vendor_category_email_address,
+  sc.contact_number AS vendor_category_phone_number,
+  sc.finance_name AS vendor_finance_contact_person_name,
+  sc.finance_email AS vendor_finance_email_address,
+  sc.finance_contact_number AS vendor_finance_phone_number,
+  sc.head_name AS slikk_category_contact_person_name,
+  sc.head_email AS slikk_category_email_address,
+  sc.head_contact AS slikk_category_phone_number
+FROM
+  store_company AS sc
+  LEFT JOIN product_vendorpurchaseorder AS po ON po.company_id = sc.id
+  LEFT JOIN product_vendorpurchaseorderitem AS poi ON poi.order_id = po.id
+  LEFT JOIN product_tags AS pt ON pt.product_id = poi.product_id
+WHERE
+  sc.create_date >= (
+    '2024-04-01'::timestamp AT TIME ZONE 'Asia/Kolkata'
+  )
+  AND sc.create_date < (
+    '2026-08-24'::timestamp AT TIME ZONE 'Asia/Kolkata'
+  )
+GROUP BY
+  1,
+  2,
+  3,
+  4,
+  5,
+  6,
+  7,
+  8,
+  9,
+  10,
+  11,
+  12,
+  13,
+  14,
+  15,
+  16,
+  17,
+  18,
+  19,
+  20,
+  21,
+  22,
+  23,
+  24,
+  25,
+  26,
+  27,
+  28,
+  29,
+  30,
+  31,
+  32,
+  33,
+  34,
+  35,
+  36,
+  37,
+  38,
+  39,
+  40,
+  41,
+  42,
+  43,
+  44,
+  45,
+  46,
+  47,
+  48,
+  49;
