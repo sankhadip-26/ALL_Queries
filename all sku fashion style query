@@ -1,0 +1,35 @@
+WITH product_tags AS (
+  SELECT
+    pp.sku,
+
+    STRING_AGG(
+      DISTINCT CASE
+        WHEN STARTS_WITH(UPPER(tag.name), 'FASHIONSTYLE_')
+        THEN SPLIT_PART(tag.name, '_', 2)
+      END,
+      '/'
+      ORDER BY
+        CASE
+          WHEN STARTS_WITH(UPPER(tag.name), 'FASHIONSTYLE_')
+          THEN SPLIT_PART(tag.name, '_', 2)
+        END
+    ) AS fashion_style
+
+  FROM product_product pp
+
+  LEFT JOIN taggit_taggeditem ti
+    ON ti.object_id = pp.id
+
+  LEFT JOIN taggit_tag tag
+    ON ti.tag_id = tag.id
+
+  GROUP BY
+    pp.sku
+)
+
+SELECT
+  sku,
+  fashion_style
+FROM product_tags
+ORDER BY
+  sku;
