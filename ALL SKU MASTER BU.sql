@@ -175,7 +175,7 @@ final AS (
             THEN 'HOME'
 
             WHEN LOWER(TRIM(fashion_style)) = 'ethnic'
-            OR LOWER(TRIM(brand)) in ('fiorra','satrani','skylee')
+            OR LOWER(TRIM(brand)) in ('fiorra','satrani','skylee','slikk x patola')
             THEN 'ETHNIC'
 
             WHEN LOWER(TRIM(fashion_style)) = 'western'
