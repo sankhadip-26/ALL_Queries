@@ -1,0 +1,23 @@
+=VSTACK(
+IMPORTRANGE("1geywuhi97nSETx3LE8zqhhyH7NRBasRbI5Z3yHYqt0g","'master raw dump'!A20001:I30000"),
+IMPORTRANGE("1geywuhi97nSETx3LE8zqhhyH7NRBasRbI5Z3yHYqt0g","'master raw dump'!A30001:I40000"),
+IMPORTRANGE("1geywuhi97nSETx3LE8zqhhyH7NRBasRbI5Z3yHYqt0g","'master raw dump'!A40001:I50000"),
+IMPORTRANGE("1geywuhi97nSETx3LE8zqhhyH7NRBasRbI5Z3yHYqt0g","'master raw dump'!A50001:I60000"),
+IMPORTRANGE("1geywuhi97nSETx3LE8zqhhyH7NRBasRbI5Z3yHYqt0g","'master raw dump'!A60001:I70000"),
+IMPORTRANGE("1geywuhi97nSETx3LE8zqhhyH7NRBasRbI5Z3yHYqt0g","'master raw dump'!A70001:I80000"),
+IMPORTRANGE("1geywuhi97nSETx3LE8zqhhyH7NRBasRbI5Z3yHYqt0g","'master raw dump'!A80001:I90000"),
+IMPORTRANGE("1geywuhi97nSETx3LE8zqhhyH7NRBasRbI5Z3yHYqt0g","'master raw dump'!A90001:I100000"),
+IMPORTRANGE("1geywuhi97nSETx3LE8zqhhyH7NRBasRbI5Z3yHYqt0g","'master raw dump'!A100001:I110000"),
+IMPORTRANGE("1geywuhi97nSETx3LE8zqhhyH7NRBasRbI5Z3yHYqt0g","'master raw dump'!A110001:I120000"),
+IMPORTRANGE("1geywuhi97nSETx3LE8zqhhyH7NRBasRbI5Z3yHYqt0g","'master raw dump'!A120001:I130000"),
+IMPORTRANGE("1geywuhi97nSETx3LE8zqhhyH7NRBasRbI5Z3yHYqt0g","'master raw dump'!A130001:I140000"),
+IMPORTRANGE("1geywuhi97nSETx3LE8zqhhyH7NRBasRbI5Z3yHYqt0g","'master raw dump'!A140001:I150000")
+)
+
+=LET(
+  d,ARRAYFORMULA(IFERROR(INT('Raw dump'!A2:A),IFERROR(DATEVALUE(LEFT('Raw dump'!A2:A,10)),0))),
+  data,UNIQUE(FILTER({'Raw dump'!C2:C,'Raw dump'!E2:E},d=INT($B$2),'Raw dump'!C2:C<>"",'Raw dump'!E2:E<>"")),
+  totals,MAP(INDEX(data,,1),INDEX(data,,2),LAMBDA(bu,brand,SUM(FILTER('Raw dump'!G2:G,d=INT($B$2),'Raw dump'!C2:C=bu,'Raw dump'!E2:E=brand)))),
+  IFERROR(SORT(HSTACK(data,totals),1,TRUE,3,FALSE),"No data to display")
+)
+=SEQUENCE(1,24,0,1)
