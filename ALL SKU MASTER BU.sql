@@ -168,7 +168,11 @@ final AS (
             THEN 'LTA'
 
             WHEN LOWER(TRIM(fashion_style)) = 'footwear'
-            THEN 'FOOTWEAR'
+  OR (
+      LOWER(TRIM(brand)) = 'puma'
+      AND LOWER(TRIM(fashion_style)) = 'na'
+  )
+THEN 'FOOTWEAR'
 
             WHEN LOWER(TRIM(fashion_style)) = 'home & living'
             OR LOWER(TRIM(brand)) in ('home sizzler','fashion string')
