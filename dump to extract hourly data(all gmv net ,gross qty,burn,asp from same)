@@ -602,36 +602,35 @@ final_base AS (
     FROM remittance_dump
 WHERE dashboard_category <> 'OTHERS'
 )
-
 SELECT
     report_date AS "DATE",
     master_bu AS "MASTER_BU",
     report_gender AS "GENDER",
 
-    COALESCE(SUM(quantity) FILTER (WHERE EXTRACT(HOUR FROM order_timestamp) = 0), 0) AS "0",
-    COALESCE(SUM(quantity) FILTER (WHERE EXTRACT(HOUR FROM order_timestamp) = 1), 0) AS "1",
-    COALESCE(SUM(quantity) FILTER (WHERE EXTRACT(HOUR FROM order_timestamp) = 2), 0) AS "2",
-    COALESCE(SUM(quantity) FILTER (WHERE EXTRACT(HOUR FROM order_timestamp) = 3), 0) AS "3",
-    COALESCE(SUM(quantity) FILTER (WHERE EXTRACT(HOUR FROM order_timestamp) = 4), 0) AS "4",
-    COALESCE(SUM(quantity) FILTER (WHERE EXTRACT(HOUR FROM order_timestamp) = 5), 0) AS "5",
-    COALESCE(SUM(quantity) FILTER (WHERE EXTRACT(HOUR FROM order_timestamp) = 6), 0) AS "6",
-    COALESCE(SUM(quantity) FILTER (WHERE EXTRACT(HOUR FROM order_timestamp) = 7), 0) AS "7",
-    COALESCE(SUM(quantity) FILTER (WHERE EXTRACT(HOUR FROM order_timestamp) = 8), 0) AS "8",
-    COALESCE(SUM(quantity) FILTER (WHERE EXTRACT(HOUR FROM order_timestamp) = 9), 0) AS "9",
-    COALESCE(SUM(quantity) FILTER (WHERE EXTRACT(HOUR FROM order_timestamp) = 10), 0) AS "10",
-    COALESCE(SUM(quantity) FILTER (WHERE EXTRACT(HOUR FROM order_timestamp) = 11), 0) AS "11",
-    COALESCE(SUM(quantity) FILTER (WHERE EXTRACT(HOUR FROM order_timestamp) = 12), 0) AS "12",
-    COALESCE(SUM(quantity) FILTER (WHERE EXTRACT(HOUR FROM order_timestamp) = 13), 0) AS "13",
-    COALESCE(SUM(quantity) FILTER (WHERE EXTRACT(HOUR FROM order_timestamp) = 14), 0) AS "14",
-    COALESCE(SUM(quantity) FILTER (WHERE EXTRACT(HOUR FROM order_timestamp) = 15), 0) AS "15",
-    COALESCE(SUM(quantity) FILTER (WHERE EXTRACT(HOUR FROM order_timestamp) = 16), 0) AS "16",
-    COALESCE(SUM(quantity) FILTER (WHERE EXTRACT(HOUR FROM order_timestamp) = 17), 0) AS "17",
-    COALESCE(SUM(quantity) FILTER (WHERE EXTRACT(HOUR FROM order_timestamp) = 18), 0) AS "18",
-    COALESCE(SUM(quantity) FILTER (WHERE EXTRACT(HOUR FROM order_timestamp) = 19), 0) AS "19",
-    COALESCE(SUM(quantity) FILTER (WHERE EXTRACT(HOUR FROM order_timestamp) = 20), 0) AS "20",
-    COALESCE(SUM(quantity) FILTER (WHERE EXTRACT(HOUR FROM order_timestamp) = 21), 0) AS "21",
-    COALESCE(SUM(quantity) FILTER (WHERE EXTRACT(HOUR FROM order_timestamp) = 22), 0) AS "22",
-    COALESCE(SUM(quantity) FILTER (WHERE EXTRACT(HOUR FROM order_timestamp) = 23), 0) AS "23"
+    SUM(quantity) FILTER (WHERE EXTRACT(HOUR FROM order_timestamp) = 0) AS "0",
+    SUM(quantity) FILTER (WHERE EXTRACT(HOUR FROM order_timestamp) = 1) AS "1",
+    SUM(quantity) FILTER (WHERE EXTRACT(HOUR FROM order_timestamp) = 2) AS "2",
+    SUM(quantity) FILTER (WHERE EXTRACT(HOUR FROM order_timestamp) = 3) AS "3",
+    SUM(quantity) FILTER (WHERE EXTRACT(HOUR FROM order_timestamp) = 4) AS "4",
+    SUM(quantity) FILTER (WHERE EXTRACT(HOUR FROM order_timestamp) = 5) AS "5",
+    SUM(quantity) FILTER (WHERE EXTRACT(HOUR FROM order_timestamp) = 6) AS "6",
+    SUM(quantity) FILTER (WHERE EXTRACT(HOUR FROM order_timestamp) = 7) AS "7",
+    SUM(quantity) FILTER (WHERE EXTRACT(HOUR FROM order_timestamp) = 8) AS "8",
+    SUM(quantity) FILTER (WHERE EXTRACT(HOUR FROM order_timestamp) = 9) AS "9",
+    SUM(quantity) FILTER (WHERE EXTRACT(HOUR FROM order_timestamp) = 10) AS "10",
+    SUM(quantity) FILTER (WHERE EXTRACT(HOUR FROM order_timestamp) = 11) AS "11",
+    SUM(quantity) FILTER (WHERE EXTRACT(HOUR FROM order_timestamp) = 12) AS "12",
+    SUM(quantity) FILTER (WHERE EXTRACT(HOUR FROM order_timestamp) = 13) AS "13",
+    SUM(quantity) FILTER (WHERE EXTRACT(HOUR FROM order_timestamp) = 14) AS "14",
+    SUM(quantity) FILTER (WHERE EXTRACT(HOUR FROM order_timestamp) = 15) AS "15",
+    SUM(quantity) FILTER (WHERE EXTRACT(HOUR FROM order_timestamp) = 16) AS "16",
+    SUM(quantity) FILTER (WHERE EXTRACT(HOUR FROM order_timestamp) = 17) AS "17",
+    SUM(quantity) FILTER (WHERE EXTRACT(HOUR FROM order_timestamp) = 18) AS "18",
+    SUM(quantity) FILTER (WHERE EXTRACT(HOUR FROM order_timestamp) = 19) AS "19",
+    SUM(quantity) FILTER (WHERE EXTRACT(HOUR FROM order_timestamp) = 20) AS "20",
+    SUM(quantity) FILTER (WHERE EXTRACT(HOUR FROM order_timestamp) = 21) AS "21",
+    SUM(quantity) FILTER (WHERE EXTRACT(HOUR FROM order_timestamp) = 22) AS "22",
+    SUM(quantity) FILTER (WHERE EXTRACT(HOUR FROM order_timestamp) = 23) AS "23"
 
 FROM final_base
 
@@ -650,3 +649,4 @@ ORDER BY
         ELSE 0
     END,
     report_gender;
+
