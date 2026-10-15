@@ -597,9 +597,10 @@ final_base AS (
         END AS report_gender,
 
         order_timestamp,
-        COALESCE(quantity, 0)::numeric AS quantity
+        quantity::numeric AS quantity
 
     FROM remittance_dump
+WHERE dashboard_category <> 'OTHERS'
 )
 
 SELECT
