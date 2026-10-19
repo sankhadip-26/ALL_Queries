@@ -1,0 +1,589 @@
+WITH
+  date_range AS (
+    SELECT
+      DATE_TRUNC(CURRENT_DATE('Asia/Kolkata'), MONTH) AS start_date,
+      DATE_SUB(CURRENT_DATE('Asia/Kolkata'), INTERVAL 1 DAY) AS end_date
+  ),
+  order_level AS (
+    SELECT
+      order_id,
+      mobile,
+      MIN(create_date) AS min_create_date,
+    FROM
+      `slikk-prod.slikkprodpublic.order_order`
+    WHERE
+      status NOT IN ('OPEN', 'FAILED')
+      AND delivery_type != 'EXCHANGE'
+    GROUP BY
+      1,
+      2
+  ),
+  order_level_rank AS (
+    SELECT
+      *,
+      ROW_NUMBER() OVER (
+        PARTITION BY
+          mobile
+        ORDER BY
+          min_create_date
+      ) AS rn
+    FROM
+      order_level
+  ),
+  remittance_dump AS (
+    SELECT
+      oo.order_id,
+      oo.invoice_id,
+      oo.mobile,
+      oo.status,
+      CASE
+        WHEN oo.status = 'CANCELLED'
+        AND REGEXP_CONTAINS(TO_JSON_STRING(log), r'"status":"PACKED"') IS TRUE THEN 'cancelled_after_packed'
+        WHEN oo.status = 'CANCELLED'
+        AND REGEXP_CONTAINS(TO_JSON_STRING(log), r'"status":"PACKED"') IS FALSE THEN 'cancelled_before_packed'
+        ELSE oo.status
+      END AS status_modified,
+      ss.code AS store_code,
+      concat(" ", date(oo.create_date + INTERVAL '330' minute)) AS order_date,
+      oo.create_date + INTERVAL '330' minute AS order_timestamp,
+      EXTRACT(
+        hour
+        FROM
+          oo.create_date + INTERVAL '330' minute
+      ) AS order_hour,
+      EXTRACT(
+        minute
+        FROM
+          oo.create_date + INTERVAL '330' minute
+      ) AS order_mins,
+      format_date(
+        "%Y-%m",
+        date(oo.create_date + INTERVAL '330' minute)
+      ) AS order_month,
+      CONCAT(
+        'Wk',
+        ' | ',
+        FORMAT_DATE(
+          '%y/%m/%d',
+          DATE_TRUNC(
+            date(oo.create_date + INTERVAL '330' minute),
+            WEEK(SATURDAY)
+          )
+        ),
+        ' to ',
+        FORMAT_DATE(
+          '%y/%m/%d',
+          DATE_ADD(
+            DATE_TRUNC(
+              date(oo.create_date + INTERVAL '330' minute),
+              WEEK(SATURDAY)
+            ),
+            INTERVAL 6 DAY
+          )
+        )
+      ) AS week_label,
+      CASE
+        WHEN ss.code = 'slikk201' THEN 'jaipur'
+        ELSE 'bangalore'
+      END AS city,
+      CASE
+        WHEN olr.rn = 1 THEN 'new'
+        ELSE 'repeat'
+      END AS new_or_repeat_order,
+      oo.pincode,
+      oo.delivery_type,
+      oo.status AS order_status,
+      oo.distance,
+      oo.device_type,
+      FORMAT(
+        "%.2f",
+        oo.delivery / COUNT(oi.id) OVER (
+          PARTITION BY
+            oo.invoice_id
+        )
+      ) AS avg_delivery_fee,
+      oo.coupon_code,
+      nt.division,
+      coalesce(pt.fashion_style, 'NA') AS fashion_style,
+      coalesce(pb.name, 'NA') AS brand,
+      nt.category,
+      pt.subcategory,
+      pt.product_type,
+      nt.article_type,
+      nt.color,
+      pp.size,
+      pt.gender,
+      coalesce(u.gender, 'NA') AS user_gender,
+      pp.variant_id AS style_code,
+      pp.name AS product_name,
+      pp.sku,
+      pp.skid,
+      FORMAT("%.2f", oi.mrp) AS mrp,
+      FORMAT("%.2f", oi.sp) AS sp,
+      FORMAT("%.2f", oi.brand_offer_sp) AS brand_offer_sp,
+      FORMAT("%.2f", oi.prorated_price) AS prorated_price,
+      FORMAT("%.2f", oi.final_price) AS final_price,
+      oi.quantity,
+      CASE
+        WHEN oo.status NOT IN (
+          'CANCELLED',
+          'DECLINED',
+          'RTO_CANCELLED',
+          'RTO_DELIVERED',
+          'RTO_INITIATED'
+        ) THEN oi.fulfilled_quantity
+        ELSE 0
+      END AS fulfilled_quantity,
+      CASE
+        WHEN oo.status != 'CANCELLED' THEN oi.quantity-oi.fulfilled_quantity
+        WHEN oo.status = 'CANCELLED'
+        AND REGEXP_CONTAINS(TO_JSON_STRING(log), r'"status":"PACKED"') IS TRUE THEN oi.quantity-oi.fulfilled_quantity
+        WHEN oo.status = 'CANCELLED'
+        AND REGEXP_CONTAINS(TO_JSON_STRING(log), r'"status":"PACKED"') IS FALSE THEN 0
+      END AS declined_qty,
+      CASE
+        WHEN oo.status IN ('CANCELLED', 'RTO_DELIVERED', 'RTO_INITIATED')
+        AND REGEXP_CONTAINS(TO_JSON_STRING(log), r'"status":"PACKED"') IS TRUE THEN oi.fulfilled_quantity
+        WHEN oo.status IN ('CANCELLED', 'RTO_DELIVERED', 'RTO_INITIATED')
+        AND REGEXP_CONTAINS(TO_JSON_STRING(log), r'"status":"PACKED"') IS FALSE THEN oi.quantity
+        ELSE 0
+      END AS cancelled_qty,
+      coalesce(roi.cancelled_by_dashboard, 0) AS cancelled_by_dashboard_qty,
+      coalesce(roi.cancelled_by_user, 0) AS cancelled_by_user_qty,
+      coalesce(roi.RTO, 0) + coalesce(
+        CASE
+          WHEN oo.status IN ('RTO_DELIVERED', 'RTO_INITIATED') THEN oi.fulfilled_quantity
+        END,
+        0
+      ) AS cancelled_RTO_qty,
+      coalesce(roi.quantity, 0) AS return_quantity,
+      GREATEST(
+        CASE
+          WHEN oo.status NOT IN (
+            'CANCELLED',
+            'DECLINED',
+            'RTO_CANCELLED',
+            'RTO_DELIVERED',
+            'RTO_INITIATED'
+          ) THEN COALESCE(oi.fulfilled_quantity, 0)
+          ELSE 0
+        END - COALESCE(roi.quantity, 0),
+        0
+      ) AS net_qty_sold,
+      FORMAT("%.2f", oi.points_discount) AS points_discount,
+      FORMAT("%.2f", oi.loyalty_discount) AS loyalty_discount,
+      FORMAT("%.2f", oi.coupon_discount) AS coupon_discount,
+      FORMAT("%.2f", oi.other_discounts) AS other_discounts,
+      FORMAT(
+        "%.2f",
+        coalesce(
+          oi.points_discount + oi.loyalty_discount + oi.coupon_discount + coalesce(CAST(oi.other_discounts AS int64), 0),
+          0
+        )
+      ) AS total_discount,
+      FORMAT(
+        "%.2f",
+        GREATEST(
+          CASE
+            WHEN oo.status NOT IN (
+              'CANCELLED',
+              'DECLINED',
+              'RTO_CANCELLED',
+              'RTO_DELIVERED',
+              'RTO_INITIATED'
+            ) THEN COALESCE(oi.fulfilled_quantity, 0)
+            ELSE 0
+          END - COALESCE(roi.quantity, 0),
+          0
+        ) * (oi.sp-oi.prorated_price)
+      ) AS net_discount,
+      FORMAT("%.2f", oi.sp * oi.quantity) AS gmv,
+      FORMAT(
+        "%.2f",
+        oi.sp * (
+          CASE
+            WHEN oo.status != 'CANCELLED' THEN oi.quantity-oi.fulfilled_quantity
+            WHEN oo.status = 'CANCELLED'
+            AND REGEXP_CONTAINS(TO_JSON_STRING(log), r'"status":"PACKED"') IS TRUE THEN oi.quantity-oi.fulfilled_quantity
+            WHEN oo.status = 'CANCELLED'
+            AND REGEXP_CONTAINS(TO_JSON_STRING(log), r'"status":"PACKED"') IS FALSE THEN 0
+          END
+        )
+      ) AS declined_amount,
+      FORMAT(
+        "%.2f",
+        oi.sp * (
+          CASE
+            WHEN oo.status IN ('CANCELLED', 'RTO_DELIVERED', 'RTO_INITIATED')
+            AND REGEXP_CONTAINS(TO_JSON_STRING(log), r'"status":"PACKED"') IS TRUE THEN oi.fulfilled_quantity
+            WHEN oo.status IN ('CANCELLED', 'RTO_DELIVERED', 'RTO_INITIATED')
+            AND REGEXP_CONTAINS(TO_JSON_STRING(log), r'"status":"PACKED"') IS FALSE THEN oi.quantity
+            ELSE 0
+          END
+        )
+      ) AS cancelled_amount,
+      FORMAT(
+        "%.2f",
+        coalesce(roi.cancelled_by_dashboard, 0) * oi.sp
+      ) AS cancelled_by_dashboard_amount,
+      FORMAT(
+        "%.2f",
+        (
+          coalesce(roi.RTO, 0) + coalesce(
+            CASE
+              WHEN oo.status IN ('RTO_DELIVERED', 'RTO_INITIATED') THEN oi.fulfilled_quantity
+            END,
+            0
+          )
+        ) * oi.sp
+      ) AS cancelled_rto_amount,
+      FORMAT(
+        "%.2f",
+        oi.sp * coalesce(roi.cancelled_by_user, 0)
+      ) AS cancelled_by_user_amount,
+      FORMAT("%.2f", oi.sp * coalesce(roi.quantity, 0)) AS return_amount,
+      FORMAT(
+        "%.2f",
+        (oi.sp * oi.quantity) - oi.sp * coalesce(
+          (
+            CASE
+              WHEN oo.status != 'CANCELLED' THEN oi.quantity-oi.fulfilled_quantity
+              WHEN oo.status = 'CANCELLED'
+              AND REGEXP_CONTAINS(TO_JSON_STRING(log), r'"status":"PACKED"') IS TRUE THEN oi.quantity-oi.fulfilled_quantity
+              WHEN oo.status = 'CANCELLED'
+              AND REGEXP_CONTAINS(TO_JSON_STRING(log), r'"status":"PACKED"') IS FALSE THEN 0
+            END
+          ),
+          0
+        ) - oi.sp * coalesce(
+          (
+            CASE
+              WHEN oo.status IN ('CANCELLED', 'RTO_DELIVERED', 'RTO_INITIATED')
+              AND REGEXP_CONTAINS(TO_JSON_STRING(log), r'"status":"PACKED"') IS TRUE THEN oi.fulfilled_quantity
+              WHEN oo.status IN ('CANCELLED', 'RTO_DELIVERED', 'RTO_INITIATED')
+              AND REGEXP_CONTAINS(TO_JSON_STRING(log), r'"status":"PACKED"') IS FALSE THEN oi.quantity
+            END
+          ),
+          0
+        ) - oi.sp * coalesce(roi.quantity, 0)
+      ) AS nmv_before_discount,
+      FORMAT(
+        "%.2f",
+        (oi.sp * oi.quantity) - oi.sp * coalesce(
+          (
+            CASE
+              WHEN oo.status != 'CANCELLED' THEN oi.quantity-oi.fulfilled_quantity
+              WHEN oo.status = 'CANCELLED'
+              AND REGEXP_CONTAINS(TO_JSON_STRING(log), r'"status":"PACKED"') IS TRUE THEN oi.quantity-oi.fulfilled_quantity
+              WHEN oo.status = 'CANCELLED'
+              AND REGEXP_CONTAINS(TO_JSON_STRING(log), r'"status":"PACKED"') IS FALSE THEN 0
+            END
+          ),
+          0
+        ) - oi.sp * coalesce(
+          (
+            CASE
+              WHEN oo.status IN ('CANCELLED', 'RTO_DELIVERED', 'RTO_INITIATED')
+              AND REGEXP_CONTAINS(TO_JSON_STRING(log), r'"status":"PACKED"') IS TRUE THEN oi.fulfilled_quantity
+              WHEN oo.status IN ('CANCELLED', 'RTO_DELIVERED', 'RTO_INITIATED')
+              AND REGEXP_CONTAINS(TO_JSON_STRING(log), r'"status":"PACKED"') IS FALSE THEN oi.quantity
+            END
+          ),
+          0
+        ) - oi.sp * coalesce(roi.quantity, 0) - GREATEST(
+          CASE
+            WHEN oo.status NOT IN (
+              'CANCELLED',
+              'DECLINED',
+              'RTO_CANCELLED',
+              'RTO_DELIVERED',
+              'RTO_INITIATED'
+            ) THEN COALESCE(oi.fulfilled_quantity, 0)
+            ELSE 0
+          END - COALESCE(roi.quantity, 0),
+          0
+        ) * (oi.sp-oi.prorated_price)
+      ) AS nmv_after_discount,
+      coalesce(mode, 'NA') AS payment_mode,
+      coalesce(p.status, 'NA') AS payment_status,
+    FROM
+      slikk-prod.slikkprodpublic.order_order oo
+      JOIN slikk-prod.slikkprodpublic.store_store ss ON oo.store_id = ss.id
+      JOIN slikk-prod.slikkprodpublic.order_orderitem oi ON oo.id = oi.order_id
+      JOIN slikk-prod.slikkprodpublic.product_product pp ON pp.id = oi.product_id
+      JOIN slikk-prod.slikkprodpublic.product_brand pb ON pb.id = pp.brand_id
+      JOIN order_level_rank olr ON olr.order_id = oo.order_id
+      JOIN slikk-prod.slikksilver.product_tags pt ON pt.product_id = pp.id
+      LEFT JOIN slikk-prod.slikkanalytics.silver_new_product_tags nt on nt.product_id = pp.id
+      LEFT JOIN (
+        SELECT
+          order_id,
+          MAX(mode) AS mode,
+          MAX(status) AS status,
+        FROM
+          slikk-prod.slikkprodpublic.payment_payment
+        WHERE
+          status IN ('COMPLETED', 'POD_COMPLETED')
+        GROUP BY
+          1
+      ) p ON (
+        p.order_id = oo.order_id
+        OR p.order_id = oo.uuid
+      )
+      LEFT JOIN slikk-prod.slikkprodpublic.authentication_user u ON u.mobile = oo.mobile
+      LEFT JOIN (
+        SELECT
+          roi_inner.order_item_id,
+          SUM(roi_inner.return_amount) AS return_amount,
+          SUM(roi_inner.quantity) AS quantity,
+          SUM(roi_inner.cancelled_by_dashboard) AS cancelled_by_dashboard,
+          SUM(roi_inner.RTO) AS RTO,
+          SUM(roi_inner.cancelled_by_user) AS cancelled_by_user,
+          SUM(roi_inner.cancelled_by_dashboard_amount) AS cancelled_by_dashboard_amount,
+          SUM(roi_inner.RTO_amount) AS RTO_amount,
+          SUM(roi_inner.cancelled_by_user_amount) AS cancelled_by_user_amount
+        FROM
+          (
+            SELECT
+              roi.order_item_id,
+              CASE
+                WHEN ro.status NOT IN (
+                  'OPEN',
+                  'ACCEPTED',
+                  'CANCELLED',
+                  'DELIVERY_CANCELLED',
+                  'PICKUP_CANCELLED',
+                  'RETURN_CANCELLED',
+                  'RETURN_REJECTED',
+                  'ATTEMPT_FAILED'
+                )
+                AND oo.status IN (
+                  'COMPLETED',
+                  'PACKED',
+                  'SHIPPED',
+                  'OUT_FOR_DELIVERY',
+                  'ACCEPTED'
+                ) THEN roi.return_amount
+              END AS return_amount,
+              CASE
+                WHEN ro.status NOT IN (
+                  'OPEN',
+                  'ACCEPTED',
+                  'CANCELLED',
+                  'DELIVERY_CANCELLED',
+                  'PICKUP_CANCELLED',
+                  'RETURN_CANCELLED',
+                  'RETURN_REJECTED',
+                  'ATTEMPT_FAILED'
+                )
+                AND oo.status IN (
+                  'COMPLETED',
+                  'PACKED',
+                  'SHIPPED',
+                  'OUT_FOR_DELIVERY',
+                  'ACCEPTED'
+                ) THEN roi.quantity
+              END AS quantity,
+              CASE
+                WHEN oo.status = 'CANCELLED'
+                AND REGEXP_CONTAINS(TO_JSON_STRING(oo.log), r'"status":"PACKED"') IS TRUE
+                AND NOT (
+                  REGEXP_CONTAINS(
+                    TO_JSON_STRING(oo.log),
+                    r'"status":"RTO_INITIATED"'
+                  )
+                  OR REGEXP_CONTAINS(
+                    TO_JSON_STRING(oo.log),
+                    r'"status":"RTO_DELIVERED"'
+                  )
+                )
+                AND ro.return_type = 'DASHBOARD_CANCELLED' THEN oi.fulfilled_quantity
+                WHEN oo.status = 'CANCELLED'
+                AND REGEXP_CONTAINS(TO_JSON_STRING(oo.log), r'"status":"PACKED"') IS FALSE
+                AND NOT (
+                  REGEXP_CONTAINS(
+                    TO_JSON_STRING(oo.log),
+                    r'"status":"RTO_INITIATED"'
+                  )
+                  OR REGEXP_CONTAINS(
+                    TO_JSON_STRING(oo.log),
+                    r'"status":"RTO_DELIVERED"'
+                  )
+                )
+                AND ro.return_type = 'DASHBOARD_CANCELLED' THEN oi.quantity
+              END AS cancelled_by_dashboard,
+              CASE
+                WHEN oo.status = 'CANCELLED'
+                AND REGEXP_CONTAINS(TO_JSON_STRING(oo.log), r'"status":"PACKED"') IS TRUE
+                AND (
+                  REGEXP_CONTAINS(
+                    TO_JSON_STRING(oo.log),
+                    r'"status":"RTO_INITIATED"'
+                  )
+                  OR REGEXP_CONTAINS(
+                    TO_JSON_STRING(oo.log),
+                    r'"status":"RTO_DELIVERED"'
+                  )
+                  OR ro.return_type = 'RTO'
+                ) THEN oi.fulfilled_quantity
+                WHEN oo.status = 'CANCELLED'
+                AND REGEXP_CONTAINS(TO_JSON_STRING(oo.log), r'"status":"PACKED"') IS FALSE
+                AND (
+                  REGEXP_CONTAINS(
+                    TO_JSON_STRING(oo.log),
+                    r'"status":"RTO_INITIATED"'
+                  )
+                  OR REGEXP_CONTAINS(
+                    TO_JSON_STRING(oo.log),
+                    r'"status":"RTO_DELIVERED"'
+                  )
+                  OR ro.return_type = 'RTO'
+                ) THEN oi.quantity
+              END AS RTO,
+              CASE
+                WHEN oo.status = 'CANCELLED'
+                AND REGEXP_CONTAINS(TO_JSON_STRING(oo.log), r'"status":"PACKED"') IS TRUE
+                AND NOT (
+                  REGEXP_CONTAINS(
+                    TO_JSON_STRING(oo.log),
+                    r'"status":"RTO_INITIATED"'
+                  )
+                  OR REGEXP_CONTAINS(
+                    TO_JSON_STRING(oo.log),
+                    r'"status":"RTO_DELIVERED"'
+                  )
+                )
+                AND ro.return_type LIKE 'USER%' THEN oi.fulfilled_quantity
+                WHEN oo.status = 'CANCELLED'
+                AND REGEXP_CONTAINS(TO_JSON_STRING(oo.log), r'"status":"PACKED"') IS FALSE
+                AND NOT (
+                  REGEXP_CONTAINS(
+                    TO_JSON_STRING(oo.log),
+                    r'"status":"RTO_INITIATED"'
+                  )
+                  OR REGEXP_CONTAINS(
+                    TO_JSON_STRING(oo.log),
+                    r'"status":"RTO_DELIVERED"'
+                  )
+                )
+                AND ro.return_type LIKE 'USER%' THEN oi.quantity
+              END AS cancelled_by_user,
+              CASE
+                WHEN oo.status = 'CANCELLED'
+                AND REGEXP_CONTAINS(TO_JSON_STRING(oo.log), r'"status":"PACKED"') IS TRUE
+                AND NOT (
+                  REGEXP_CONTAINS(
+                    TO_JSON_STRING(oo.log),
+                    r'"status":"RTO_INITIATED"'
+                  )
+                  OR REGEXP_CONTAINS(
+                    TO_JSON_STRING(oo.log),
+                    r'"status":"RTO_DELIVERED"'
+                  )
+                )
+                AND ro.return_type = 'DASHBOARD_CANCELLED' THEN oi.fulfilled_quantity * oi.prorated_price
+                WHEN oo.status = 'CANCELLED'
+                AND REGEXP_CONTAINS(TO_JSON_STRING(oo.log), r'"status":"PACKED"') IS FALSE
+                AND NOT (
+                  REGEXP_CONTAINS(
+                    TO_JSON_STRING(oo.log),
+                    r'"status":"RTO_INITIATED"'
+                  )
+                  OR REGEXP_CONTAINS(
+                    TO_JSON_STRING(oo.log),
+                    r'"status":"RTO_DELIVERED"'
+                  )
+                )
+                AND ro.return_type = 'DASHBOARD_CANCELLED' THEN oi.quantity * oi.prorated_price
+              END AS cancelled_by_dashboard_amount,
+              CASE
+                WHEN oo.status = 'CANCELLED'
+                AND REGEXP_CONTAINS(TO_JSON_STRING(oo.log), r'"status":"PACKED"') IS TRUE
+                AND (
+                  REGEXP_CONTAINS(
+                    TO_JSON_STRING(oo.log),
+                    r'"status":"RTO_INITIATED"'
+                  )
+                  OR REGEXP_CONTAINS(
+                    TO_JSON_STRING(oo.log),
+                    r'"status":"RTO_DELIVERED"'
+                  )
+                  OR ro.return_type = 'RTO'
+                ) THEN oi.fulfilled_quantity * oi.prorated_price
+                WHEN oo.status = 'CANCELLED'
+                AND REGEXP_CONTAINS(TO_JSON_STRING(oo.log), r'"status":"PACKED"') IS FALSE
+                AND (
+                  REGEXP_CONTAINS(
+                    TO_JSON_STRING(oo.log),
+                    r'"status":"RTO_INITIATED"'
+                  )
+                  OR REGEXP_CONTAINS(
+                    TO_JSON_STRING(oo.log),
+                    r'"status":"RTO_DELIVERED"'
+                  )
+                  OR ro.return_type = 'RTO'
+                ) THEN oi.quantity * oi.prorated_price
+              END AS RTO_amount,
+              CASE
+                WHEN oo.status = 'CANCELLED'
+                AND REGEXP_CONTAINS(TO_JSON_STRING(oo.log), r'"status":"PACKED"') IS TRUE
+                AND NOT (
+                  REGEXP_CONTAINS(
+                    TO_JSON_STRING(oo.log),
+                    r'"status":"RTO_INITIATED"'
+                  )
+                  OR REGEXP_CONTAINS(
+                    TO_JSON_STRING(oo.log),
+                    r'"status":"RTO_DELIVERED"'
+                  )
+                )
+                AND ro.return_type LIKE 'USER%' THEN oi.fulfilled_quantity * oi.prorated_price
+                WHEN oo.status = 'CANCELLED'
+                AND REGEXP_CONTAINS(TO_JSON_STRING(oo.log), r'"status":"PACKED"') IS FALSE
+                AND NOT (
+                  REGEXP_CONTAINS(
+                    TO_JSON_STRING(oo.log),
+                    r'"status":"RTO_INITIATED"'
+                  )
+                  OR REGEXP_CONTAINS(
+                    TO_JSON_STRING(oo.log),
+                    r'"status":"RTO_DELIVERED"'
+                  )
+                )
+                AND ro.return_type LIKE 'USER%' THEN oi.quantity * oi.prorated_price
+              END AS cancelled_by_user_amount,
+              ROW_NUMBER() OVER (
+                PARTITION BY
+                  roi.order_item_id,
+                  CASE
+                    WHEN oo.status = 'CANCELLED' THEN 'FIXED'
+                    ELSE CAST(ro.id AS STRING)
+                  END
+                ORDER BY
+                  ro.create_date ASC
+              ) AS rn
+            FROM
+              slikk-prod.slikkprodpublic.order_returnorderitem roi
+              JOIN slikk-prod.slikkprodpublic.order_returnorder ro ON roi.return_order_id = ro.id
+              JOIN slikk-prod.slikkprodpublic.order_orderitem oi ON oi.id = roi.order_item_id
+              JOIN slikk-prod.slikkprodpublic.order_order oo ON oo.id = oi.order_id
+            WHERE
+              oo.delivery_type != 'EXCHANGE'
+              AND lower(ro.return_type) not like "%exchange%"
+          ) roi_inner
+        WHERE
+          rn = 1
+        GROUP BY
+          1
+      ) roi ON roi.order_item_id = oi.id
+    WHERE
+      oo.status NOT IN ('OPEN', 'FAILED')
+      AND oo.delivery_type != 'EXCHANGE'
+      AND DATE(oo.create_date, 'Asia/Kolkata')
+    BETWEEN (SELECT start_date FROM date_range)
+        AND (SELECT end_date FROM date_range)
+  )
+SELECT
+  *
+FROM
+  remittance_dump
