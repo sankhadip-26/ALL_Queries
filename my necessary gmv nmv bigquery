@@ -1,0 +1,50 @@
+
+WITH date_range AS (
+  SELECT
+    DATE_TRUNC(CURRENT_DATE('Asia/Kolkata'), MONTH) AS start_date,
+    DATE_SUB(CURRENT_DATE('Asia/Kolkata'), INTERVAL 1 DAY) AS end_date
+)
+
+SELECT
+  CONCAT(
+    ' ',
+    CAST(DATE(oo.create_date + INTERVAL 330 MINUTE) AS STRING)
+  ) AS order_date,
+
+  nt.division AS division,
+  nt.category AS category,
+  nt.article_type AS article_type,
+  COALESCE(pb.name, 'NA') AS brand,
+  pt.gender AS gender,
+
+  pp.sku AS sku,
+
+  ROUND(SAFE_CAST(oi.brand_offer_sp AS NUMERIC), 2) AS brand_offer_sp,
+  ROUND(SAFE_CAST(oi.mrp AS NUMERIC), 2) AS mrp,
+  ROUND(SAFE_CAST(oi.sp AS NUMERIC), 2) AS sp,
+
+  oi.quantity AS quantity
+
+FROM `slikk-prod.slikkprodpublic.order_order` oo
+
+JOIN `slikk-prod.slikkprodpublic.order_orderitem` oi
+  ON oo.id = oi.order_id
+
+JOIN `slikk-prod.slikkprodpublic.product_product` pp
+  ON pp.id = oi.product_id
+
+JOIN `slikk-prod.slikkprodpublic.product_brand` pb
+  ON pb.id = pp.brand_id
+
+JOIN `slikk-prod.slikksilver.product_tags` pt
+  ON pt.product_id = pp.id
+
+LEFT JOIN `slikk-prod.slikkanalytics.silver_new_product_tags` nt
+  ON nt.product_id = pp.id
+
+WHERE
+  oo.status NOT IN ('OPEN', 'FAILED')
+  AND oo.delivery_type != 'EXCHANGE'
+  AND DATE(oo.create_date, 'Asia/Kolkata')
+      BETWEEN (SELECT start_date FROM date_range)
+          AND (SELECT end_date FROM date_range);
