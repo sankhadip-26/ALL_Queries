@@ -1,0 +1,23 @@
+SELECT
+  nt.article_type AS article_type,
+  pp.variant_id AS style_code,
+  COUNT(*) AS pdp_views
+
+FROM `slikk-prod.slikksilver.silver_pdp_events` e
+
+LEFT JOIN `slikk-prod.slikkprodpublic.product_product` pp
+  ON LOWER(e.product_id) = LOWER(pp.skid)
+  OR LOWER(e.product_id) = LOWER(pp.sku)
+  OR LOWER(e.product_id) = LOWER(pp.barcode)
+
+LEFT JOIN `slikk-prod.slikkanalytics.silver_new_product_tags` nt
+  ON nt.product_id = pp.id
+
+WHERE e.create_date BETWEEN '2026-07-30' AND '2026-10-28'
+
+GROUP BY
+  article_type,
+  style_code
+
+ORDER BY
+  pdp_views DESC;
