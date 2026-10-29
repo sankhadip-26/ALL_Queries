@@ -1,9 +1,8 @@
-WITH
-  date_range AS (
-    SELECT
-      DATE '2026-08-01' AS start_date,
-DATE '2026-10-28' AS end_date
-  ),
+WITH date_range AS (
+  SELECT
+    DATE '2026-09-01' AS start_date,
+    DATE '2026-09-30' AS end_date
+),
   order_level AS (
     SELECT
       order_id,
@@ -44,6 +43,7 @@ DATE '2026-10-28' AS end_date
         ELSE oo.status
       END AS status_modified,
       ss.code AS store_code,
+      sc.code AS company_code,
       concat(" ", date(oo.create_date + INTERVAL '330' minute)) AS order_date,
       oo.create_date + INTERVAL '330' minute AS order_timestamp,
       EXTRACT(
@@ -67,7 +67,7 @@ DATE '2026-10-28' AS end_date
           '%y/%m/%d',
           DATE_TRUNC(
             date(oo.create_date + INTERVAL '330' minute),
-            WEEK(SATURDAY)
+            WEEK(MONDAY)
           )
         ),
         ' to ',
@@ -76,7 +76,7 @@ DATE '2026-10-28' AS end_date
           DATE_ADD(
             DATE_TRUNC(
               date(oo.create_date + INTERVAL '330' minute),
-              WEEK(SATURDAY)
+              WEEK(MONDAY)
             ),
             INTERVAL 6 DAY
           )
@@ -112,8 +112,7 @@ DATE '2026-10-28' AS end_date
       nt.article_type,
       nt.color,
       pp.size,
-      pt.gender,
-      sc.code as company_code,
+      nt.gender,
       coalesce(u.gender, 'NA') AS user_gender,
       pp.variant_id AS style_code,
       pp.name AS product_name,
@@ -312,10 +311,10 @@ DATE '2026-10-28' AS end_date
       JOIN slikk-prod.slikkprodpublic.store_store ss ON oo.store_id = ss.id
       JOIN slikk-prod.slikkprodpublic.order_orderitem oi ON oo.id = oi.order_id
       JOIN slikk-prod.slikkprodpublic.product_product pp ON pp.id = oi.product_id
+      LEFT JOIN `slikk-prod.slikkprodpublic.store_company` sc ON sc.id = pp.company_id
       JOIN slikk-prod.slikkprodpublic.product_brand pb ON pb.id = pp.brand_id
       JOIN order_level_rank olr ON olr.order_id = oo.order_id
       JOIN slikk-prod.slikksilver.product_tags pt ON pt.product_id = pp.id
-      left join slikk-prod.slikkprodpublic.store_company sc on sc.id=pp.company_id
       LEFT JOIN slikk-prod.slikkanalytics.silver_new_product_tags nt on nt.product_id = pp.id
       LEFT JOIN (
         SELECT
@@ -581,13 +580,11 @@ DATE '2026-10-28' AS end_date
     WHERE
       oo.status NOT IN ('OPEN', 'FAILED')
       AND oo.delivery_type != 'EXCHANGE'
-      AND DATE(oo.create_date, 'Asia/Kolkata')
+      AND DATE(oo.create_date + INTERVAL '330' MINUTE)
     BETWEEN (SELECT start_date FROM date_range)
         AND (SELECT end_date FROM date_range)
   )
 SELECT
   *
 FROM
-  remittance_dump 
-  where lower(company_code) = 'ronak optik'
-  -- where lower(division) = 'accessories';
+  remittance_dump
