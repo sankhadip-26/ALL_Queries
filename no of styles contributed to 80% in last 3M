@@ -1,0 +1,112 @@
+
+WITH date_range AS (
+  SELECT
+    DATE_SUB(
+      DATE_TRUNC(CURRENT_DATE('Asia/Kolkata'), MONTH),
+      INTERVAL 3 MONTH
+    ) AS start_date,
+    DATE_TRUNC(CURRENT_DATE('Asia/Kolkata'), MONTH) AS end_exclusive
+),
+
+base AS (
+  SELECT
+    nt.article_type AS article_type,
+    pp.variant_id AS style_code,
+    SAFE_CAST(oi.quantity AS NUMERIC) AS quantity
+
+  FROM `slikk-prod.slikkprodpublic.order_order` oo
+
+  JOIN `slikk-prod.slikkprodpublic.order_orderitem` oi
+    ON oo.id = oi.order_id
+
+  JOIN `slikk-prod.slikkprodpublic.product_product` pp
+    ON pp.id = oi.product_id
+
+  JOIN `slikk-prod.slikksilver.product_tags` pt
+    ON pt.product_id = pp.id
+
+  LEFT JOIN `slikk-prod.slikkanalytics.silver_new_product_tags` nt
+    ON nt.product_id = pp.id
+
+  CROSS JOIN date_range d
+
+  WHERE
+    oo.status NOT IN ('OPEN', 'FAILED')
+    AND oo.delivery_type != 'EXCHANGE'
+    AND DATE(oo.create_date, 'Asia/Kolkata') >= d.start_date
+    AND DATE(oo.create_date, 'Asia/Kolkata') < d.end_exclusive
+),
+
+style_sales AS (
+  SELECT
+    article_type,
+    style_code,
+    SUM(quantity) AS style_qty_sold
+  FROM base
+  WHERE
+    article_type IS NOT NULL
+    AND style_code IS NOT NULL
+  GROUP BY
+    article_type,
+    style_code
+),
+
+ranked_styles AS (
+  SELECT
+    article_type,
+    style_code,
+    style_qty_sold,
+
+    SUM(style_qty_sold) OVER (
+      PARTITION BY article_type
+    ) AS article_type_total_qty,
+
+    ROW_NUMBER() OVER (
+      PARTITION BY article_type
+      ORDER BY style_qty_sold DESC, style_code
+    ) AS style_rank,
+
+    SUM(style_qty_sold) OVER (
+      PARTITION BY article_type
+      ORDER BY style_qty_sold DESC, style_code
+      ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW
+    ) AS cumulative_qty
+
+  FROM style_sales
+),
+
+final AS (
+  SELECT
+    article_type,
+    style_code,
+    style_rank,
+    style_qty_sold,
+    article_type_total_qty,
+
+    ROUND(article_type_total_qty * 0.80, 2) AS qty_target_80,
+
+    ROUND(
+      SAFE_DIVIDE(style_qty_sold, article_type_total_qty) * 100,
+      2
+    ) AS style_sales_contribution_pct,
+
+    ROUND(
+      SAFE_DIVIDE(cumulative_qty, article_type_total_qty) * 100,
+      2
+    ) AS cumulative_sales_contribution_pct,
+
+    CASE
+      WHEN cumulative_qty - style_qty_sold < article_type_total_qty * 0.80
+        THEN 'Top 80%'
+      ELSE 'Remaining'
+    END AS sales_bucket
+
+  FROM ranked_styles
+)
+
+SELECT *
+FROM final
+ORDER BY
+  article_type_total_qty DESC,
+  article_type,
+  style_rank;
