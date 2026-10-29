@@ -1,14 +1,13 @@
-
 WITH date_range AS (
   SELECT
     DATE_SUB(
-      DATE_TRUNC(CURRENT_DATE('Asia/Kolkata'), MONTH),
+      DATE_SUB(CURRENT_DATE('Asia/Kolkata'), INTERVAL 1 DAY),
       INTERVAL 3 MONTH
-    ) AS start_date,
-    DATE_TRUNC(
+    ) + INTERVAL 1 DAY AS start_date,
+    DATE_SUB(
       CURRENT_DATE('Asia/Kolkata'),
-      MONTH
-    ) AS end_exclusive
+      INTERVAL 1 DAY
+    ) AS end_date
 ),
 
 base AS (
