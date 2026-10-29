@@ -1,0 +1,122 @@
+WITH date_range AS (
+  SELECT
+    DATE '2026-07-30' AS start_date,
+    DATE '2026-10-28' AS end_date
+),
+
+pdp_events AS (
+  SELECT
+    e.create_date,
+    e.product_id AS event_product_id
+  FROM `slikk-prod.slikksilver.silver_pdp_events` e
+  CROSS JOIN date_range d
+  WHERE e.create_date BETWEEN d.start_date AND d.end_date
+),
+
+product_mapping AS (
+  SELECT
+    pp.id AS product_id,
+    pp.variant_id AS style_code,
+    nt.article_type AS article_type,
+    LOWER(pp.skid) AS skid_key,
+    LOWER(pp.sku) AS sku_key,
+    LOWER(pp.barcode) AS barcode_key
+  FROM `slikk-prod.slikkprodpublic.product_product` pp
+  LEFT JOIN `slikk-prod.slikkanalytics.silver_new_product_tags` nt
+    ON nt.product_id = pp.id
+),
+
+matched_pdp AS (
+  SELECT
+    e.create_date,
+    e.event_product_id,
+    pm.product_id,
+    pm.article_type,
+    pm.style_code
+  FROM pdp_events e
+  LEFT JOIN product_mapping pm
+    ON LOWER(e.event_product_id) = pm.skid_key
+    OR LOWER(e.event_product_id) = pm.sku_key
+    OR LOWER(e.event_product_id) = pm.barcode_key
+),
+
+base AS (
+  SELECT
+    article_type,
+    style_code,
+    COUNT(*) AS pdp_views
+  FROM matched_pdp
+  WHERE
+    article_type IS NOT NULL
+    AND style_code IS NOT NULL
+  GROUP BY
+    article_type,
+    style_code
+),
+
+ranked_styles AS (
+  SELECT
+    article_type,
+    style_code,
+    pdp_views,
+
+    SUM(pdp_views) OVER (
+      PARTITION BY article_type
+    ) AS article_type_total_pdp_views,
+
+    ROW_NUMBER() OVER (
+      PARTITION BY article_type
+      ORDER BY pdp_views DESC, style_code
+    ) AS style_rank,
+
+    SUM(pdp_views) OVER (
+      PARTITION BY article_type
+      ORDER BY pdp_views DESC, style_code
+      ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW
+    ) AS cumulative_pdp_views
+
+  FROM base
+),
+
+final AS (
+  SELECT
+    article_type,
+    style_code,
+    style_rank,
+    pdp_views,
+    article_type_total_pdp_views,
+
+    ROUND(
+      article_type_total_pdp_views * 0.80,
+      2
+    ) AS pdp_target_80,
+
+    ROUND(
+      SAFE_DIVIDE(pdp_views, article_type_total_pdp_views) * 100,
+      2
+    ) AS style_pdp_contribution_pct,
+
+    ROUND(
+      SAFE_DIVIDE(
+        cumulative_pdp_views,
+        article_type_total_pdp_views
+      ) * 100,
+      2
+    ) AS cumulative_pdp_contribution_pct,
+
+    CASE
+      WHEN cumulative_pdp_views - pdp_views
+           < article_type_total_pdp_views * 0.80
+        THEN 'Top 80%'
+      ELSE 'Remaining'
+    END AS pdp_bucket
+
+  FROM ranked_styles
+)
+
+SELECT *
+FROM final
+ORDER BY
+  article_type_total_pdp_views DESC,
+  article_type,
+  style_rank;
