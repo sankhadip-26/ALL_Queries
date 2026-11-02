@@ -1,0 +1,94 @@
+WITH date_range AS (
+  SELECT
+    DATE '2026-07-30' AS start_date,
+    DATE '2026-10-29' AS end_date
+),
+
+base AS (
+  SELECT
+    nt.article_type,
+    COALESCE(pb.name, 'NA') AS brand,
+    pp.variant_id AS style_code,
+    SAFE_CAST(oi.quantity AS NUMERIC) AS quantity
+  FROM `slikk-prod.slikkprodpublic.order_order` oo
+  JOIN `slikk-prod.slikkprodpublic.order_orderitem` oi
+    ON oo.id = oi.order_id
+  JOIN `slikk-prod.slikkprodpublic.product_product` pp
+    ON pp.id = oi.product_id
+  JOIN `slikk-prod.slikkprodpublic.product_brand` pb
+    ON pb.id = pp.brand_id
+  JOIN `slikk-prod.slikksilver.product_tags` pt
+    ON pt.product_id = pp.id
+  LEFT JOIN `slikk-prod.slikkanalytics.silver_new_product_tags` nt
+    ON nt.product_id = pp.id
+  CROSS JOIN date_range d
+  WHERE oo.status NOT IN ('OPEN', 'FAILED')
+    AND oo.delivery_type != 'EXCHANGE'
+    AND DATE(oo.create_date, 'Asia/Kolkata')
+      BETWEEN d.start_date AND d.end_date
+),
+
+style_sales AS (
+  SELECT
+    article_type,
+    brand,
+    style_code,
+    SUM(quantity) AS style_qty_sold
+  FROM base
+  GROUP BY
+    article_type,
+    brand,
+    style_code
+),
+
+ranked_styles AS (
+  SELECT
+    article_type,
+    brand,
+    style_code,
+    style_qty_sold,
+    SUM(style_qty_sold) OVER (
+      PARTITION BY article_type, brand
+    ) AS total_qty_sold,
+    SUM(style_qty_sold) OVER (
+      PARTITION BY article_type, brand
+      ORDER BY style_qty_sold DESC, style_code
+      ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW
+    ) AS cumulative_qty_sold,
+    ROW_NUMBER() OVER (
+      PARTITION BY article_type, brand
+      ORDER BY style_qty_sold DESC, style_code
+    ) AS style_rank
+  FROM style_sales
+),
+
+article_summary AS (
+  SELECT
+    article_type,
+    brand,
+    MAX(total_qty_sold) AS total_qty_sold,
+    COUNTIF(
+      cumulative_qty_sold - style_qty_sold < total_qty_sold * 0.80
+    ) AS styles_needed_for_80_percent,
+    COUNT(*) AS total_styles
+  FROM ranked_styles
+  GROUP BY
+    article_type,
+    brand
+)
+
+SELECT
+  article_type,
+  brand,
+  total_qty_sold,
+  total_qty_sold * 0.80 AS qty_target_80_percent,
+  styles_needed_for_80_percent,
+  total_styles,
+  SAFE_DIVIDE(styles_needed_for_80_percent, total_styles) * 100
+    AS percent_of_styles_needed
+FROM article_summary
+ORDER BY
+  SUM(total_qty_sold) OVER (PARTITION BY article_type) DESC,
+  total_qty_sold DESC,
+  article_type,
+  brand;
