@@ -1,18 +1,13 @@
 WITH date_range AS (
   SELECT
-    DATE_SUB(
-      DATE_SUB(CURRENT_DATE('Asia/Kolkata'), INTERVAL 1 DAY),
-      INTERVAL 3 MONTH
-    ) + INTERVAL 1 DAY AS start_date,
-    DATE_SUB(
-      CURRENT_DATE('Asia/Kolkata'),
-      INTERVAL 1 DAY
-    ) AS end_date
+    DATE '2026-07-30' AS start_date,
+    DATE '2026-10-29' AS end_date
 ),
 
 base AS (
   SELECT
     nt.article_type AS article_type,
+    nt.gender AS gender,
     pp.variant_id AS style_code,
     SAFE_CAST(oi.quantity AS NUMERIC) AS quantity
 
@@ -35,13 +30,14 @@ base AS (
   WHERE
     oo.status NOT IN ('OPEN', 'FAILED')
     AND oo.delivery_type != 'EXCHANGE'
-    AND DATE(oo.create_date, 'Asia/Kolkata') >= d.start_date
-    AND DATE(oo.create_date, 'Asia/Kolkata') < d.end_exclusive
+    AND DATE(oo.create_date, 'Asia/Kolkata')
+      BETWEEN d.start_date AND d.end_date
 ),
 
 style_sales AS (
   SELECT
     article_type,
+    gender,
     style_code,
     SUM(quantity) AS style_qty_sold
 
@@ -49,33 +45,31 @@ style_sales AS (
 
   WHERE
     article_type IS NOT NULL
+    AND gender IS NOT NULL
     AND style_code IS NOT NULL
 
   GROUP BY
     article_type,
+    gender,
     style_code
 ),
 
 ranked_styles AS (
   SELECT
     article_type,
+    gender,
     style_code,
     style_qty_sold,
 
     SUM(style_qty_sold) OVER (
-      PARTITION BY article_type
+      PARTITION BY article_type, gender
     ) AS total_qty_sold,
 
     SUM(style_qty_sold) OVER (
-      PARTITION BY article_type
+      PARTITION BY article_type, gender
       ORDER BY style_qty_sold DESC, style_code
       ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW
-    ) AS cumulative_qty,
-
-    ROW_NUMBER() OVER (
-      PARTITION BY article_type
-      ORDER BY style_qty_sold DESC, style_code
-    ) AS style_rank
+    ) AS cumulative_qty
 
   FROM style_sales
 ),
@@ -83,8 +77,8 @@ ranked_styles AS (
 article_summary AS (
   SELECT
     article_type,
+    gender,
     MAX(total_qty_sold) AS total_qty_sold,
-
     MAX(total_qty_sold) * 0.80 AS qty_target_80,
 
     COUNTIF(
@@ -96,29 +90,27 @@ article_summary AS (
   FROM ranked_styles
 
   GROUP BY
-    article_type
+    article_type,
+    gender
 )
 
 SELECT
   article_type,
-
+  gender,
   total_qty_sold,
-
   ROUND(qty_target_80, 2) AS qty_target_80,
-
   styles_needed_for_80,
-
   total_styles_sold,
 
   ROUND(
-    SAFE_DIVIDE(
-      styles_needed_for_80,
-      total_styles_sold
-    ) * 100,
+    SAFE_DIVIDE(styles_needed_for_80, total_styles_sold) * 100,
     2
   ) AS percent_of_styles_needed
 
 FROM article_summary
 
 ORDER BY
-  total_qty_sold DESC;
+  SUM(total_qty_sold) OVER (PARTITION BY article_type) DESC,
+  total_qty_sold DESC,
+  article_type,
+  gender;
